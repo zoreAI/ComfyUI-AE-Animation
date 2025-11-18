@@ -203,6 +203,14 @@ wallen0322
 
 欢迎提交Issue和PR！
 
+## 致谢
+
+感谢 [jtydhr88](https://github.com/jtydhr88) 柯基大佬指点！
+
+时间轴灵感来自：[vanilla-threejs-project](https://github.com/fulopkovacs/vanilla-threejs-project)
+
+感恩！
+
 ---
 
 **享受创作动画的乐趣！** 🎬✨
