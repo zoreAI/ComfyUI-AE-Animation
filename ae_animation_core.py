@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io as python_io
 import json
+import logging
 from typing import Any, Dict, List, Optional, Sequence
 
 import cv2
@@ -283,23 +284,43 @@ class AERender(io.ComfyNode):
 
     @classmethod
     def _get_value(cls, keyframes: Dict[str, Any], prop: str, time: float, default: float) -> float:
+        """Get interpolated value from keyframes at specific time.
+        
+        Args:
+            keyframes: Dictionary containing keyframe data
+            prop: Property name to look up
+            time: Time to interpolate at
+            default: Default value if property not found or invalid
+            
+        Returns:
+            Interpolated value at the given time
+        """
         if prop not in keyframes:
             return default
             
         frames_data = keyframes[prop]
         if not isinstance(frames_data, list):
+            logging.warning(f"Invalid keyframe data type for property '{prop}': expected list, got {type(frames_data).__name__}")
             return default
             
-        # Filter valid frames that have both 'time' and 'value'
+        # Filter and validate frames with both 'time' and 'value'
         frames = []
+        invalid_count = 0
         for frame in frames_data:
             if isinstance(frame, dict) and 'time' in frame and 'value' in frame:
                 frames.append(frame)
+            else:
+                invalid_count += 1
+                
+        if invalid_count > 0:
+            logging.warning(f"Skipped {invalid_count} invalid frame(s) in property '{prop}' (missing 'time' or 'value')")
                 
         if not frames:
+            logging.warning(f"No valid frames found for property '{prop}', using default value {default}")
             return default
             
-        frames = sorted(frames, key=lambda k: k.get("time", 0))
+        # Sort frames by time
+        frames.sort(key=lambda k: k["time"])
         if time <= frames[0]["time"]:
             return frames[0]["value"]
         if time >= frames[-1]["time"]:
