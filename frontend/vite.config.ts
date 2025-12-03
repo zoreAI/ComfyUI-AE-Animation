@@ -12,6 +12,7 @@ export default defineConfig({
     }
   },
   build: {
+    // 输出到 js/vue-dist，与 WEB_DIRECTORY=./js 对应
     outDir: '../js/vue-dist',
     emptyOutDir: true,
     rollupOptions: {

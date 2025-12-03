@@ -1,222 +1,256 @@
-<template>
-  <div class="root">
-    <!-- 1. 画布区域 -->
-    <div class="canvas-area">
-      <CanvasPreview ref="canvasPreviewRef" />
-    </div>
-    
-    <!-- 2. 功能按钮与工程管理 -->
-    <div class="toolbar-area">
-      <div class="toolbar-left">
-        <button class="tb-btn accent" @click="exportProject" title="保存工程文件 (.json)">💾 Save Proj</button>
-        <button class="tb-btn" @click="triggerLoadProject" title="加载工程文件">📂 Load Proj</button>
-        <button class="tb-btn" @click="clearCache" title="清理未选图层的图像缓存">🧹 清缓存</button>
-        <select class="tb-select" v-model="fitMode" title="背景适配模式">
-          <option value="fit">Fit</option>
-          <option value="fill">Fill</option>
-          <option value="stretch">Stretch</option>
-        </select>
+﻿<template>
+  <div class="ae-timeline-root">
+    <header class="ae-header">
+      <div class="header-left">
+        <div class="logo">
+          <div class="logo-icon">AE</div>
+          <span class="logo-text">AE Animator</span>
+        </div>
+        <div class="header-divider"></div>
+        <button class="btn btn-ghost" @click="exportProject" title="保存工程文件">Save</button>
+        <button class="btn btn-ghost" @click="triggerLoadProject" title="加载工程文件">Load</button>
       </div>
-      
-      <div class="toolbar-center">
-        <button class="tb-btn btn-green" @click="addForeground" title="添加前景图层">＋图片</button>
-        <button class="tb-btn btn-blue" @click="addBackground" title="添加背景图层">＋背景</button>
-        <span class="tb-sep"></span>
-        <button class="tb-btn" @click="seekToZero" title="回到起点">|◀</button>
-        <button class="tb-btn btn-play" :class="{active: store.isPlaying}" @click="store.togglePlayback" title="播放/暂停">
-          {{ store.isPlaying ? '■' : '▶' }}
-        </button>
-        <span class="tb-sep"></span>
-        <button class="tb-btn btn-amber" @click="addKeyframe" title="添加关键帧 (K)">◆ Key</button>
-        <button class="tb-btn btn-red" @click="deleteCurrentKeyframe" title="删除关键帧">✕ Key</button>
-        <button class="tb-btn btn-red" @click="clearAllKeyframes" title="清除所有关键帧">ALL</button>
-        <span class="tb-sep"></span>
-        <!-- 工具栏 -->
-        <button class="tb-btn btn-mask" :class="{active: store.maskMode.enabled}" @click="toggleMask" title="遮罩绘制模式">🖌 Mask</button>
-        <button 
-          v-if="store.maskMode.enabled" 
-          class="tb-btn" 
-          :class="{active: store.maskMode.erase}" 
-          @click="store.maskMode.erase = !store.maskMode.erase" 
-          title="切换橡皮擦/还原"
-        >
-          🧽 Erase
-        </button>
-        <button class="tb-btn btn-path" :class="{active: store.pathMode.enabled}" @click="togglePath" title="路径动画模式">📍 Path</button>
-        <button class="tb-btn btn-extract" :class="{active: store.extractMode.enabled}" @click="toggleExtract" title="背景提取模式">✂ Extract</button>
-        
-        <!-- Extract 操作组 -->
-        <div v-if="store.extractMode.enabled" class="extract-actions">
-          <button class="tb-btn accent" @click="applyExtract" title="应用提取结果并生成前景图层">✓ Apply</button>
-          <button class="tb-btn" @click="clearExtractSelection" title="清空提取选区">⟲ Clear</button>
+      <div class="header-center">
+        <span class="project-info">{{ store.project.width }}x{{ store.project.height }} @ {{ store.project.fps }} FPS</span>
+      </div>
+      <div class="header-right">
+        <button class="btn btn-primary" @click="addForeground">+ FG Layer</button>
+        <button class="btn btn-secondary" @click="addBackground">+ BG Layer</button>
+        <div class="header-divider"></div>
+        <button class="btn btn-accent" @click="save" title="保存到节点">Save</button>
+        <button class="btn btn-close" @click="close" title="关闭">Close</button>
+      </div>
+    </header>
+
+    <div class="ae-main">
+      <aside class="ae-inspector">
+        <div class="inspector-card" v-if="store.currentLayer">
+          <div class="card-header">
+            <span class="layer-title">{{ displayLayerName(store.currentLayer, store.currentLayerIndex) }}</span>
+            <span class="layer-badge" :class="store.currentLayer.type">
+              {{ store.currentLayer.type === 'background' ? 'BG' : 'FG' }}
+            </span>
+          </div>
+          <div class="card-subtitle">
+            Layer {{ store.currentLayerIndex + 1 }} - {{ store.currentLayer.type === 'background' ? 'Background' : 'Foreground' }}
+          </div>
+        </div>
+        <div class="inspector-card empty" v-else>
+          <span>请选择一个图层</span>
         </div>
 
-        <button class="tb-btn" @click="refreshPreview" title="刷新预览（从缓存加载）">🔄</button>
-        <button class="tb-btn btn-run" @click="runNode" title="运行节点">⚡ Run</button>
-        <span class="tb-sep"></span>
-        <span class="tb-time">{{ formatTime(store.currentTime) }}</span>
-        <button class="tb-btn save" @click="save">保存到节点</button>
-        <button class="tb-btn close" @click="close">✕</button>
-      </div>
-    </div>
-    
-    <!-- 3. 参数调整区域 -->
-    <div class="params-area">
-      <template v-if="store.currentLayer">
-        <span class="param-label">Layer {{ store.currentLayerIndex + 1 }} ({{ store.currentLayer.type === 'background' ? 'BG' : 'FG' }})</span>
-        
-        <div class="param-group">
-          <label>X</label>
-          <input type="number" :value="currentLayerProps.x.toFixed(0)" @input="updateProp('x', $event)" step="1" class="param-input" />
-        </div>
-        <div class="param-group">
-          <label>Y</label>
-          <input type="number" :value="currentLayerProps.y.toFixed(0)" @input="updateProp('y', $event)" step="1" class="param-input" />
-        </div>
-        <div class="param-group">
-          <label>Scale</label>
-          <input type="number" :value="currentLayerProps.scale.toFixed(2)" @input="updateProp('scale', $event)" step="0.01" min="0.1" max="5" class="param-input" />
-        </div>
-        <div class="param-group">
-          <label>Rotate</label>
-          <input type="number" :value="currentLayerProps.rotation.toFixed(0)" @input="updateProp('rotation', $event)" step="1" class="param-input" />
-        </div>
-        <div class="param-group">
-          <label>Opacity</label>
-          <input type="range" :value="currentLayerProps.opacity" @input="updateProp('opacity', $event)" min="0" max="1" step="0.01" class="param-slider" />
-          <span class="param-value">{{ (currentLayerProps.opacity * 100).toFixed(0) }}%</span>
-        </div>
-        
-        <!-- Mask 画笔设置 (新增) -->
-        <template v-if="store.maskMode.enabled">
-          <div class="param-sep"></div>
-          <div class="param-group">
-            <label>Mask Brush</label>
-            <input type="range" v-model.number="store.maskMode.brush" min="1" max="100" step="1" class="param-slider" />
-            <span class="param-value">{{ store.maskMode.brush }}px</span>
-          </div>
-        </template>
-
-        <!-- Extract 设置 -->
-        <template v-if="store.extractMode.enabled">
-          <div class="param-sep"></div>
-          <div class="param-group">
-            <label>Extract Brush</label>
-            <input type="range" v-model.number="store.extractMode.brush" min="5" max="150" step="1" class="param-slider" />
-            <span class="param-value">{{ store.extractMode.brush }}px</span>
-          </div>
-        </template>
-      </template>
-      <template v-else>
-        <span class="param-empty">请选择一个图层进行编辑</span>
-      </template>
-    </div>
-    
-    <!-- 4. 底部：图层 + 时间轴 (重构：像素定位系统) -->
-    <div class="bottom-area">
-      <!-- 左侧：图层列表 -->
-      <div class="layers-sidebar">
-        <div class="layers-header">
-          <span>Layers ({{ store.layers.length }})</span>
-          <div class="layer-actions">
-            <button class="layer-btn" @click="moveUp" :disabled="!store.currentLayer" title="上移">▲</button>
-            <button class="layer-btn" @click="moveDown" :disabled="!store.currentLayer" title="下移">▼</button>
-          </div>
-        </div>
-        <div class="layers-list" @scroll="onLayersScroll">
-          <div v-for="(layer, i) in store.layers" :key="layer.id" 
-               class="layer-item" 
-               :class="{active: i === store.currentLayerIndex}"
-               @click="store.selectLayer(i)">
-            <input 
-              type="checkbox" 
-              class="layer-check" 
-              :checked="i === store.currentLayerIndex" 
-              @click.stop 
-              @change="store.selectLayer(i)"
-              :aria-label="`Select ${displayLayerName(layer, i)}`"
-            />
-            <span class="layer-vis" @click.stop="toggleVis(layer)">👁</span>
-            <span class="layer-badge" :class="layer.type">{{ layer.type === 'background' ? 'BG' : 'FG' }}</span>
-            <span class="layer-name" :title="layer.name || displayLayerName(layer, i)">{{ displayLayerName(layer, i) }}</span>
-            <button class="layer-del" @click.stop="store.removeLayer(i)">🗑</button>
-          </div>
-        </div>
-      </div>
-      
-      <!-- 右侧：时间轴 (Scrollable Container) -->
-      <div class="timeline-area" ref="timelineRef">
-        <div class="timeline-content" :style="{ width: timelineWidth + 'px', '--tick-size': pixelsPerSecond + 'px' }">
-          <!-- 时间标尺 -->
-          <div class="timeline-ruler" 
-               @mousedown="onRulerMouseDown" 
-               @mousemove="onRulerMouseMove" 
-               @mouseup="onRulerMouseUp"
-               @mouseleave="onRulerMouseUp">
-            <div v-for="i in Math.ceil(projectDuration) + 1" :key="i" 
-                 class="tick" 
-                 :style="{ left: ((i-1) * pixelsPerSecond) + 'px' }">
-              <span class="tick-label">{{ i-1 }}s</span>
+        <div class="inspector-section" v-if="store.currentLayer">
+          <div class="section-title">Transform</div>
+          <div class="property-list">
+            <div class="property-row">
+              <span class="prop-label">Position X</span>
+              <input type="number" class="prop-input" :value="currentLayerProps.x.toFixed(0)" @input="updateProp('x', $event)" step="1" />
             </div>
-            <!-- 播放头 -->
-            <div class="playhead-top" :style="{ left: (store.currentTime * pixelsPerSecond) + 'px' }"></div>
-          </div>
-          
-          <!-- 轨道列表 -->
-          <div class="timeline-tracks" @dblclick="onTrackDblClick" @scroll="onTracksScroll">
-            <template v-for="(layer, layerIdx) in store.layers" :key="layer.id">
-              <!-- 图层行 -->
-              <div class="track-header" 
-                   :class="{active: layerIdx === store.currentLayerIndex, expanded: expandedLayers.has(layerIdx)}"
-                   @click="store.selectLayer(layerIdx)">
-                <button class="track-expand" @click.stop="toggleLayerExpand(layerIdx)">
-                  {{ expandedLayers.has(layerIdx) ? '▼' : '▶' }}
-                </button>
-                <span class="track-bar" :style="{ width: (projectDuration * pixelsPerSecond) + 'px' }"></span>
+            <div class="property-row">
+              <span class="prop-label">Position Y</span>
+              <input type="number" class="prop-input" :value="currentLayerProps.y.toFixed(0)" @input="updateProp('y', $event)" step="1" />
+            </div>
+            <div class="property-row">
+              <span class="prop-label">Scale</span>
+              <input type="number" class="prop-input" :value="(currentLayerProps.scale * 100).toFixed(0)" @input="updateScaleProp($event)" step="1" />
+              <span class="prop-unit">%</span>
+            </div>
+            <div class="property-row">
+              <span class="prop-label">Rotation</span>
+              <input type="number" class="prop-input" :value="currentLayerProps.rotation.toFixed(0)" @input="updateProp('rotation', $event)" step="1" />
+              <span class="prop-unit">deg</span>
+            </div>
+            <div class="property-row slider-row">
+              <div class="slider-header">
+                <span class="prop-label">Opacity</span>
+                <span class="prop-value">{{ (currentLayerProps.opacity * 100).toFixed(0) }}%</span>
               </div>
-              
-              <!-- 属性展开行 -->
-              <template v-if="expandedLayers.has(layerIdx)">
-                <div v-for="prop in animatableProps" :key="prop.key" 
-                     class="track-prop"
-                     :class="{active: layerIdx === store.currentLayerIndex}"
-                     @click="store.selectLayer(layerIdx)">
-                  <div class="prop-track" 
-                       @dblclick.stop="addKeyframeAt($event, layerIdx, prop.key)">
-                    <!-- 关键帧 (Pixel Position) -->
-                    <div v-for="kf in getPropertyKeyframes(layer, prop.key)" :key="kf.time"
-                         class="keyframe"
-                         :class="{selected: isKeyframeSelected(layerIdx, prop.key, kf.time)}"
-                         :style="{ left: (kf.time * pixelsPerSecond) + 'px' }"
-                         :title="`${prop.label}: ${formatValue(kf.value, prop.key)} @ ${kf.time.toFixed(2)}s`"
-                         @mousedown.stop="onKeyframeDragStart($event, layerIdx, prop.key, kf)"
-                         @click.stop="selectKeyframe(layerIdx, prop.key, kf.time)"
-                         @contextmenu.prevent="deleteKeyframe(layerIdx, prop.key, kf.time)">
-                    </div>
+              <input type="range" class="prop-slider" :value="currentLayerProps.opacity" @input="updateProp('opacity', $event)" min="0" max="1" step="0.01" />
+            </div>
+          </div>
+        </div>
+
+        <div class="inspector-section">
+          <div class="section-title">Tools</div>
+          <div class="tools-grid">
+            <button class="tool-btn" :class="{active: store.maskMode.enabled}" @click="toggleMode('mask')">Mask Mode</button>
+            <button class="tool-btn" :class="{active: store.maskMode.enabled && store.maskMode.erase}" @click="store.maskMode.erase = !store.maskMode.erase" :disabled="!store.maskMode.enabled">Eraser</button>
+            <button class="tool-btn" :class="{active: store.pathMode.enabled}" @click="toggleMode('path')">Path Tool</button>
+            <button class="tool-btn" :class="{active: store.extractMode.enabled}" @click="toggleMode('extract')">AI Extract</button>
+          </div>
+
+          <div class="tool-settings" v-if="store.maskMode.enabled">
+            <div class="slider-header">
+              <span class="prop-label">Brush Size</span>
+              <span class="prop-value">{{ store.maskMode.brush }}px</span>
+            </div>
+            <input type="range" class="prop-slider" v-model.number="store.maskMode.brush" min="1" max="100" step="1" />
+          </div>
+
+          <div class="tool-settings" v-if="store.extractMode.enabled">
+            <div class="slider-header">
+              <span class="prop-label">Brush Size</span>
+              <span class="prop-value">{{ store.extractMode.brush }}px</span>
+            </div>
+            <input type="range" class="prop-slider" v-model.number="store.extractMode.brush" min="5" max="150" step="1" />
+            <div class="extract-actions">
+              <button class="btn btn-small btn-primary" @click="applyExtract">Apply</button>
+              <button class="btn btn-small btn-ghost" @click="clearExtractSelection">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="inspector-section">
+          <div class="section-title">Actions</div>
+          <div class="action-row">
+            <button class="btn btn-small btn-ghost" @click="clearCache">Clear Cache</button>
+            <button class="btn btn-small btn-ghost" @click="refreshPreview">Refresh</button>
+            <button class="btn btn-small btn-accent" @click="runNode">Run</button>
+          </div>
+          <div class="fit-row">
+            <span class="prop-label">Fit Mode</span>
+            <select class="fit-select" v-model="fitMode">
+              <option value="fit">Fit</option>
+              <option value="fill">Fill</option>
+              <option value="stretch">Stretch</option>
+            </select>
+          </div>
+        </div>
+      </aside>
+
+      <main class="ae-viewport">
+        <div class="viewport-bar">
+          <span class="duration-text">Duration: {{ formatTime(projectDuration) }}</span>
+          <span class="time-text">{{ formatTime(store.currentTime) }}</span>
+        </div>
+        <div class="viewport-canvas">
+          <CanvasPreview ref="canvasPreviewRef" :fitMode="fitMode" />
+        </div>
+      </main>
+    </div>
+
+    <footer class="ae-timeline">
+      <div class="timeline-controls">
+        <div class="controls-left">
+          <button class="btn btn-small btn-ghost" @click="addKeyframe">+ Keyframe</button>
+          <button class="btn btn-small btn-ghost" @click="deleteCurrentKeyframe">Del Key</button>
+          <button class="btn btn-small btn-ghost" @click="clearAllKeyframes">Clear All</button>
+        </div>
+        <div class="controls-center">
+          <span class="time-display">{{ formatTime(store.currentTime) }}</span>
+          <div class="playback-btns">
+            <button class="pb-btn" @click="seekToZero">|<</button>
+            <button class="play-btn" :class="{playing: store.isPlaying}" @click="store.togglePlayback">
+              {{ store.isPlaying ? 'Pause' : 'Play' }}
+            </button>
+            <button class="pb-btn" @click="seekToEnd">>|</button>
+          </div>
+        </div>
+        <div class="controls-right">
+          <button class="nav-btn" @click="moveUp" :disabled="!store.currentLayer">Up</button>
+          <button class="nav-btn" @click="moveDown" :disabled="!store.currentLayer">Down</button>
+        </div>
+      </div>
+
+      <div class="timeline-body">
+        <div class="layers-panel">
+          <div class="layers-header">Layers ({{ store.layers.length }})</div>
+          <div class="layers-list" @scroll="onLayersScroll">
+            <div
+              v-for="(layer, i) in store.layers"
+              :key="layer.id"
+              class="layer-item"
+              :class="{active: i === store.currentLayerIndex}"
+              @click="store.selectLayer(i)"
+            >
+              <span class="expand-icon" @click.stop="toggleLayerExpand(i)">
+                {{ expandedLayers.has(i) ? 'v' : '>' }}
+              </span>
+              <span class="layer-type" :class="layer.type">{{ layer.type === 'background' ? 'B' : 'F' }}</span>
+              <span class="layer-name">{{ displayLayerName(layer, i) }}</span>
+              <span class="layer-btns">
+                <span class="vis-icon" @click.stop="toggleVis(layer)" :class="{off: layer.hidden}">eye</span>
+                <span class="del-icon" @click.stop="store.removeLayer(i)">x</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tracks-panel" ref="timelineRef">
+          <div class="tracks-content" :style="{ width: timelineWidth + 'px' }">
+            <div class="ruler" @mousedown="onRulerMouseDown">
+              <div
+                v-for="i in Math.ceil(projectDuration) + 1"
+                :key="i"
+                class="ruler-tick"
+                :style="{ left: ((i - 1) * pixelsPerSecond) + 'px' }"
+              >
+                <span class="tick-text">{{ i - 1 }}s</span>
+              </div>
+              <div class="playhead-top" :style="{ left: (store.currentTime * pixelsPerSecond) + 'px' }"></div>
+            </div>
+
+            <div class="tracks-list" @dblclick="onTrackDblClick" @scroll="onTracksScroll">
+              <template v-for="(layer, layerIdx) in store.layers" :key="layer.id">
+                <div
+                  class="track-row"
+                  :class="{active: layerIdx === store.currentLayerIndex}"
+                  @click="store.selectLayer(layerIdx)"
+                >
+                  <div class="track-bar" :class="layer.type" :style="{ width: (projectDuration * pixelsPerSecond) + 'px' }">
+                    <template v-if="!expandedLayers.has(layerIdx)">
+                      <div
+                        v-for="kf in getAllLayerKeyframes(layer)"
+                        :key="kf.time + kf.prop"
+                        class="mini-kf"
+                        :style="{ left: (kf.time * pixelsPerSecond) + 'px' }"
+                      ></div>
+                    </template>
                   </div>
                 </div>
+
+                <template v-if="expandedLayers.has(layerIdx)">
+                  <div
+                    v-for="prop in animatableProps"
+                    :key="prop.key"
+                    class="prop-track-row"
+                    :class="{active: layerIdx === store.currentLayerIndex}"
+                    @click="store.selectLayer(layerIdx)"
+                  >
+                    <div class="prop-track" @dblclick.stop="addKeyframeAt($event, layerIdx, prop.key)">
+                      <div
+                        v-for="kf in getPropertyKeyframes(layer, prop.key)"
+                        :key="kf.time"
+                        class="keyframe-dot"
+                        :class="{selected: isKeyframeSelected(layerIdx, prop.key, kf.time)}"
+                        :style="{ left: (kf.time * pixelsPerSecond) + 'px' }"
+                        :title="`${prop.label}: ${formatValue(kf.value, prop.key)} @ ${kf.time.toFixed(2)}s`"
+                        @mousedown.stop="onKeyframeDragStart($event, layerIdx, prop.key, kf)"
+                        @click.stop="selectKeyframe(layerIdx, prop.key, kf.time)"
+                        @contextmenu.prevent="deleteKeyframe(layerIdx, prop.key, kf.time)"
+                      ></div>
+                    </div>
+                  </div>
+                </template>
               </template>
-            </template>
+            </div>
+
+            <div class="playhead-line" :style="{ left: (store.currentTime * pixelsPerSecond) + 'px' }"></div>
           </div>
-          
-          <!-- 全局播放头线 -->
-          <div class="playhead-line" :style="{ left: (store.currentTime * pixelsPerSecond) + 'px' }"></div>
         </div>
       </div>
-    </div>
-    
-    <!-- 隐形文件输入 -->
+    </footer>
+
     <input ref="fileInput" type="file" accept="image/*" multiple style="display:none" @change="onFile" />
     <input ref="projectInput" type="file" accept=".json" style="display:none" @change="onLoadProject" />
   </div>
 </template>
-
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useTimelineStore } from '@/stores/timelineStore'
 import CanvasPreview from '@/components/timeline/CanvasPreview.vue'
 
-const BASE_PIXELS_PER_SECOND = 60 // 最小像素密度，视口不够时再放大填满
+const BASE_PIXELS_PER_SECOND = 80
 
 const props = defineProps<{ node: any }>()
 const store = useTimelineStore()
@@ -235,18 +269,8 @@ function toNumber(value: any, fallback: number) {
   return Number.isFinite(num) ? num : fallback
 }
 
-// 项目设置表单
-const projectForm = reactive({
-  width: store.project.width,
-  height: store.project.height,
-  fps: store.project.fps,
-  total_frames: store.project.total_frames
-})
-
-// Fit 模式
 const fitMode = ref<'fit' | 'fill' | 'stretch'>('fit')
 
-// 项目时长计算
 const projectDuration = computed(() => {
   const fps = Math.max(1, store.project.fps || 1)
   return store.project.duration || (store.project.total_frames / fps) || 0
@@ -259,10 +283,12 @@ const pixelsPerSecond = computed(() => {
   return Math.max(BASE_PIXELS_PER_SECOND, fit)
 })
 
-// 计算总宽度，确保滚动
 const timelineWidth = computed(() => {
-  const extra = 120 // 额外留白，便于拖动
-  return Math.max(projectDuration.value * pixelsPerSecond.value + extra, containerWidth.value || 0)
+  const extra = 120
+  const minWidth = 800
+  const calculatedWidth = projectDuration.value * pixelsPerSecond.value + extra
+  const containerW = containerWidth.value || timelineRef.value?.clientWidth || 0
+  return Math.max(calculatedWidth, containerW, minWidth)
 })
 
 watch(() => store.extractMode.enabled, (enabled) => {
@@ -272,10 +298,17 @@ watch(() => store.extractMode.enabled, (enabled) => {
 })
 
 function syncTimelineWidth() {
-  if (!timelineRef.value) return
-  const parentWidth = timelineRef.value.parentElement?.clientWidth || timelineRef.value.getBoundingClientRect().width || 0
+  if (!timelineRef.value) {
+    setTimeout(syncTimelineWidth, 100)
+    return
+  }
+  const rect = timelineRef.value.getBoundingClientRect()
+  const parentWidth = timelineRef.value.parentElement?.clientWidth || rect.width || 0
   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : parentWidth
-  containerWidth.value = Math.min(parentWidth || viewportWidth, viewportWidth)
+  const newWidth = Math.max(parentWidth || viewportWidth, 800)
+  if (newWidth > 0) {
+    containerWidth.value = newWidth
+  }
 }
 
 onMounted(() => {
@@ -293,6 +326,7 @@ onMounted(() => {
     window.addEventListener('resize', syncTimelineWidth)
   }
 })
+
 let isDraggingKeyframe = false
 let draggingKeyframeData: { layerIdx: number, prop: string, originalTime: number } | null = null
 
@@ -355,11 +389,30 @@ function updateProp(prop: string, event: Event) {
   store.updateLayer(store.currentLayerIndex, { [prop]: value })
 }
 
+function updateScaleProp(event: Event) {
+  const layer = store.currentLayer
+  if (!layer) return
+  const percentValue = parseFloat((event.target as HTMLInputElement).value)
+  if (isNaN(percentValue)) return
+  const value = percentValue / 100
+  const time = store.currentTime
+  if (layer.keyframes && layer.keyframes.scale && layer.keyframes.scale.length > 0) {
+    const kfIndex = layer.keyframes.scale.findIndex((k: any) => Math.abs(k.time - time) < 0.05)
+    if (kfIndex >= 0) {
+      layer.keyframes.scale[kfIndex] = { time: layer.keyframes.scale[kfIndex].time, value }
+    } else {
+      layer.keyframes.scale.push({ time, value })
+      layer.keyframes.scale.sort((a: any, b: any) => a.time - b.time)
+    }
+  }
+  store.updateLayer(store.currentLayerIndex, { scale: value })
+}
+
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   const frames = Math.floor((seconds % 1) * store.project.fps)
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${frames.toString().padStart(2, '0')}`
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}:${frames.toString().padStart(2, '0')}`
 }
 
 function getPropertyKeyframes(layer: any, prop: string) {
@@ -367,8 +420,21 @@ function getPropertyKeyframes(layer: any, prop: string) {
   return layer.keyframes[prop].map((kf: any) => ({ time: kf.time, value: kf.value }))
 }
 
+function getAllLayerKeyframes(layer: any) {
+  const result: { time: number, prop: string }[] = []
+  if (!layer.keyframes) return result
+  for (const prop of animatableProps) {
+    const kfs = layer.keyframes[prop.key]
+    if (kfs) {
+      kfs.forEach((kf: any) => result.push({ time: kf.time, prop: prop.key }))
+    }
+  }
+  return result
+}
+
 function formatValue(value: number, prop: string): string {
   if (prop === 'opacity') return (value * 100).toFixed(0) + '%'
+  if (prop === 'scale') return (value * 100).toFixed(0) + '%'
   return value.toFixed(1)
 }
 
@@ -381,30 +447,26 @@ function toggleLayerExpand(layerIdx: number) {
 }
 
 function toggleVis(layer: any) {
-  // 暂未实现图层可见性逻辑，预留
-  console.log('Toggle vis', layer.id)
+  layer.hidden = !layer.hidden
+  canvasPreviewRef.value?.scheduleRender?.()
 }
 
-// --- 时间轴交互 (Pixel Based) ---
 function getTimeFromEvent(e: MouseEvent): number {
   if (!timelineRef.value) return 0
-  const content = timelineRef.value.querySelector('.timeline-content')
+  const content = timelineRef.value.querySelector('.tracks-content')
   if (!content) return 0
   
   const rect = content.getBoundingClientRect()
   const scrollLeft = timelineRef.value.scrollLeft
-  const clickX = e.clientX - rect.left + scrollLeft // 相对于内容左侧的距离，加入滚动偏移
+  const clickX = e.clientX - rect.left + scrollLeft
 
   const pps = pixelsPerSecond.value || BASE_PIXELS_PER_SECOND
   
-  // 如果点击位置在0点附近（容差10像素）或小于等于0，直接返回0，确保可以精确到达0点
-  // 这样可以处理拖拽时鼠标稍微偏移的情况
   if (clickX <= 10) {
     return 0
   }
   
   const time = clickX / pps
-  // 确保时间不为负数，并且不超过项目时长
   return Math.max(0, Math.min(time, projectDuration.value))
 }
 
@@ -413,7 +475,6 @@ function onRulerMouseDown(e: MouseEvent) {
   isDraggingRuler = true
   store.setCurrentTime(getTimeFromEvent(e))
   
-  // 使用全局事件监听，确保拖拽时即使鼠标移出ruler也能继续跟踪
   const onGlobalMove = (moveE: MouseEvent) => {
     if (!isDraggingRuler) return
     store.setCurrentTime(getTimeFromEvent(moveE))
@@ -429,15 +490,6 @@ function onRulerMouseDown(e: MouseEvent) {
   document.addEventListener('mouseup', onGlobalUp)
 }
 
-function onRulerMouseMove(e: MouseEvent) {
-  if (!isDraggingRuler) return
-  store.setCurrentTime(getTimeFromEvent(e))
-}
-
-function onRulerMouseUp() {
-  isDraggingRuler = false
-}
-
 function onTrackDblClick(e: MouseEvent) {
   if (!store.currentLayer) return
   const time = getTimeFromEvent(e)
@@ -446,8 +498,6 @@ function onTrackDblClick(e: MouseEvent) {
 }
 
 function addKeyframeAt(e: MouseEvent, layerIdx: number, prop: string) {
-  // 实现双击轨道添加关键帧逻辑
-  // 注意：需要计算相对于 prop-track 的位置
   const target = e.currentTarget as HTMLElement
   const rect = target.getBoundingClientRect()
   const localX = e.clientX - rect.left
@@ -497,7 +547,6 @@ function onKeyframeDragStart(e: MouseEvent, layerIdx: number, prop: string, kf: 
     const diffTime = diffX / pps
     let newTime = Math.max(0, startTime + diffTime)
     
-    // 更新
     const layer = store.layers[draggingKeyframeData.layerIdx]
     if (layer?.keyframes?.[draggingKeyframeData.prop]) {
       const kfArr = layer.keyframes[draggingKeyframeData.prop]
@@ -516,10 +565,9 @@ function onKeyframeDragStart(e: MouseEvent, layerIdx: number, prop: string, kf: 
     draggingKeyframeData = null
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
-    // 排序
     const layer = store.layers[layerIdx]
     if (layer?.keyframes?.[prop]) {
-        layer.keyframes[prop].sort((a: any, b: any) => a.time - b.time)
+      layer.keyframes[prop].sort((a: any, b: any) => a.time - b.time)
     }
   }
   
@@ -538,19 +586,15 @@ function deleteKeyframe(layerIdx: number, prop: string, time: number) {
   }
 }
 
-
-// --- 滚动同步逻辑 ---
 function onLayersScroll(e: Event) {
   if (timelineRef.value) {
     const target = e.target as HTMLElement
-    const tracks = timelineRef.value.querySelector('.timeline-tracks') as HTMLElement
+    const tracks = timelineRef.value.querySelector('.tracks-list') as HTMLElement
     if (tracks) tracks.scrollTop = target.scrollTop
   }
 }
 
 function onTracksScroll(e: Event) {
-  // 仅用于水平滚动同步 (如果 ruler 分离)
-  // 但此处主要处理垂直同步
   const target = e.target as HTMLElement
   const sidebar = document.querySelector('.layers-list') as HTMLElement
   if (sidebar) sidebar.scrollTop = target.scrollTop
@@ -594,22 +638,17 @@ function loadFromNodeWidgets() {
     layers
   })
 
-  projectForm.width = store.project.width
-  projectForm.height = store.project.height
-  projectForm.fps = store.project.fps
-  projectForm.total_frames = store.project.total_frames
-
   if (store.layers.length > 0 && store.currentLayerIndex < 0) {
     store.selectLayer(0)
   }
 }
 
 function displayLayerName(layer: any, index: number) {
-  if (layer.type === 'background') return 'BG'
+  if (layer.name) return layer.name
+  if (layer.type === 'background') return 'Background'
   return `Layer ${index + 1}`
 }
 
-// --- 工程管理 (Export/Import) ---
 function exportProject() {
   const data = store.exportAnimation()
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
@@ -637,11 +676,23 @@ function onLoadProject(e: Event) {
       console.log('Project loaded successfully')
     } catch (err) {
       console.error('Failed to parse project file', err)
-      alert('工程文件损坏或格式错误')
+      alert('Project file is corrupted or has invalid format')
     }
   }
   reader.readAsText(file)
   if (projectInput.value) projectInput.value.value = ''
+}
+
+function updateWidget(name: string, value: any) {
+  const findWidget = (n: string) => props.node?.widgets?.find((x: any) => x.name === n)
+  const w = findWidget(name)
+  if (!w) return
+  w.value = value
+  if (w.inputEl) {
+    w.inputEl.value = value
+    w.inputEl.dispatchEvent(new Event("input"))
+  }
+  if (w.callback) w.callback(value)
 }
 
 function save() {
@@ -649,11 +700,9 @@ function save() {
     console.error('[AE Timeline] Node or widgets not found!')
     return
   }
-  const findWidget = (n: string) => props.node.widgets.find((x: any) => x.name === n)
   
   console.log('[AE Timeline] Saving...')
   
-  // 序列化 Mask 数据
   store.layers.forEach(layer => {
     if (layer.maskCanvas) {
       layer.customMask = layer.maskCanvas.toDataURL()
@@ -663,71 +712,37 @@ function save() {
 
   const anim = store.exportAnimation()
   
-  // Debug Path
-  anim.layers.forEach((l, i) => {
-      if (l.bezierPath && l.bezierPath.length > 0) {
-          console.log(`[AE Timeline] Layer ${l.id}: Exporting Path with ${l.bezierPath.length} points`)
-      }
+  anim.layers.forEach((l: any) => {
+    if (l.bezierPath && l.bezierPath.length > 0) {
+      console.log(`[AE Timeline] Layer ${l.id}: Exporting Path with ${l.bezierPath.length} points`)
+    }
   })
 
+  const findWidget = (n: string) => props.node.widgets.find((x: any) => x.name === n)
   const lw = findWidget('layers_keyframes')
   if (lw) {
-      const jsonStr = JSON.stringify(anim.layers)
-      lw.value = jsonStr
-      console.log(`[AE Timeline] Saved layers_keyframes (len=${jsonStr.length})`)
-      // Trigger widget update
-      if (lw.inputEl) {
-          lw.inputEl.value = jsonStr
-          lw.inputEl.dispatchEvent(new Event("input"))
-      }
-      if (lw.callback) lw.callback(jsonStr)
-      if (props.node.widgets_values) {
-          const widgetIndex = props.node.widgets.indexOf(lw)
-          if (widgetIndex >= 0) props.node.widgets_values[widgetIndex] = jsonStr
-      }
-      props.node.setDirtyCanvas?.(true, false)
+    const jsonStr = JSON.stringify(anim.layers)
+    lw.value = jsonStr
+    console.log(`[AE Timeline] Saved layers_keyframes (len=${jsonStr.length})`)
+    if (lw.inputEl) {
+      lw.inputEl.value = jsonStr
+      lw.inputEl.dispatchEvent(new Event("input"))
+    }
+    if (lw.callback) lw.callback(jsonStr)
+    if (props.node.widgets_values) {
+      const widgetIndex = props.node.widgets.indexOf(lw)
+      if (widgetIndex >= 0) props.node.widgets_values[widgetIndex] = jsonStr
+    }
+    props.node.setDirtyCanvas?.(true, false)
   } else {
-      console.error('[AE Timeline] Widget layers_keyframes not found!')
+    console.error('[AE Timeline] Widget layers_keyframes not found!')
   }
   
-  const ww = findWidget('width')
-  if (ww) {
-    ww.value = store.project.width
-    if (ww.inputEl) {
-      ww.inputEl.value = store.project.width
-      ww.inputEl.dispatchEvent(new Event("input"))
-    }
-    if (ww.callback) ww.callback(store.project.width)
-  }
-  const hw = findWidget('height')
-  if (hw) {
-    hw.value = store.project.height
-    if (hw.inputEl) {
-      hw.inputEl.value = store.project.height
-      hw.inputEl.dispatchEvent(new Event("input"))
-    }
-    if (hw.callback) hw.callback(store.project.height)
-  }
-  const fw = findWidget('fps')
-  if (fw) {
-    fw.value = store.project.fps
-    if (fw.inputEl) {
-      fw.inputEl.value = store.project.fps
-      fw.inputEl.dispatchEvent(new Event("input"))
-    }
-    if (fw.callback) fw.callback(store.project.fps)
-  }
-  const tw = findWidget('total_frames')
-  if (tw) {
-    tw.value = store.project.total_frames
-    if (tw.inputEl) {
-      tw.inputEl.value = store.project.total_frames
-      tw.inputEl.dispatchEvent(new Event("input"))
-    }
-    if (tw.callback) tw.callback(store.project.total_frames)
-  }
+  updateWidget('width', store.project.width)
+  updateWidget('height', store.project.height)
+  updateWidget('fps', store.project.fps)
+  updateWidget('total_frames', store.project.total_frames)
   
-  // 确保节点标记为脏，触发更新
   props.node.setDirtyCanvas?.(true, false)
 }
 
@@ -740,14 +755,15 @@ function close() {
 function addKeyframe() { store.addKeyframe() }
 function deleteCurrentKeyframe() { store.deleteKeyframe() }
 function seekToZero() { store.setCurrentTime(0) }
+function seekToEnd() { store.setCurrentTime(projectDuration.value) }
 
 function clearAllKeyframes() {
   if (!store.currentLayer) return
-  if (!confirm('确定要清除所有关键帧吗？')) return
+  if (!confirm('纭畾瑕佹竻闄ゅ綋鍓嶅浘灞傜殑鎵€鏈夊叧閿抚鍚楋紵')) return
   
   const layer = store.currentLayer
-  const props: (keyof typeof layer)[] = ['x', 'y', 'scale', 'rotation', 'opacity', 'mask_size']
-  props.forEach(prop => {
+  const propKeys: string[] = ['x', 'y', 'scale', 'rotation', 'opacity', 'mask_size']
+  propKeys.forEach(prop => {
     if (layer.keyframes?.[prop]) {
       layer.keyframes[prop] = []
     }
@@ -755,25 +771,23 @@ function clearAllKeyframes() {
 }
 
 function clearCache() {
-  // 清理未选图层的图像缓存
   store.layers.forEach((layer, idx) => {
-    if (idx !== store.currentLayerIndex && layer.image_data) {
-      // 可以在这里实现缓存清理逻辑
-      console.log(`[AE Timeline] Clearing cache for layer ${layer.id}`)
+    if (idx !== store.currentLayerIndex) {
+      if (layer._cachedImage) {
+        delete layer._cachedImage
+      }
+      console.log(`[AE Timeline] Cleared cache for layer ${layer.id}`)
     }
   })
 }
 
 function refreshPreview() {
-  // 刷新预览（从缓存加载）
   canvasPreviewRef.value?.scheduleRender?.()
   console.log('[AE Timeline] Preview refreshed')
 }
 
 function runNode() {
-  // 运行节点
   if (props.node) {
-    // 触发节点执行
     const graph = props.node.graph
     if (graph && (window as any).app) {
       (window as any).app.queuePrompt?.(0)
@@ -781,59 +795,35 @@ function runNode() {
   }
 }
 
-function applyProject() {
-  // 应用项目设置
-  store.setProject({
-    width: projectForm.width,
-    height: projectForm.height,
-    fps: projectForm.fps,
-    total_frames: projectForm.total_frames
-  })
-  // 同步表单
-  projectForm.width = store.project.width
-  projectForm.height = store.project.height
-  projectForm.fps = store.project.fps
-  projectForm.total_frames = store.project.total_frames
-}
-
-function toggleMask() {
-  const next = !store.maskMode.enabled
-  store.maskMode.enabled = next
-  if (next) {
-    store.pathMode.enabled = false
-    if (store.extractMode.enabled) {
-      store.extractMode.enabled = false
-      canvasPreviewRef.value?.clearExtractSelection?.()
-    }
+function toggleMode(mode: 'mask' | 'path' | 'extract') {
+  const modes = {
+    mask: store.maskMode,
+    path: store.pathMode,
+    extract: store.extractMode
   }
-}
-
-function togglePath() {
-  const next = !store.pathMode.enabled
-  store.pathMode.enabled = next
-  if (next) {
-    store.maskMode.enabled = false
-    if (store.extractMode.enabled) {
-      store.extractMode.enabled = false
-      canvasPreviewRef.value?.clearExtractSelection?.()
-    }
-  }
-}
-
-function toggleExtract() {
-  const next = !store.extractMode.enabled
-  if (next) {
+  
+  const target = modes[mode]
+  const next = !target.enabled
+  
+  if (mode === 'extract' && next) {
     const bgLayer = store.layers.find(l => l.type === 'background')
     if (!bgLayer) {
-      alert('请先添加背景图层再使用提取功能')
+      alert('Add a background layer before using extract')
       return
     }
-    store.maskMode.enabled = false
-    store.pathMode.enabled = false
-  } else {
+  }
+  
+  Object.entries(modes).forEach(([key, m]) => {
+    if (key !== mode) {
+      m.enabled = false
+    }
+  })
+  
+  if (!next || mode !== 'extract') {
     canvasPreviewRef.value?.clearExtractSelection?.()
   }
-  store.extractMode.enabled = next
+  
+  target.enabled = next
 }
 
 function clearExtractSelection() {
@@ -845,7 +835,7 @@ function applyExtract() {
   if (!preview || typeof preview.applyExtractSelection !== 'function') return
   const result = preview.applyExtractSelection()
   if (!result) {
-    alert('请先绘制提取选区')
+    alert('Draw an extract selection first')
     return
   }
   if ('error' in result) {
@@ -853,7 +843,6 @@ function applyExtract() {
     return
   }
 
-  // 1. 创建前景图层
   const fgImg = new Image()
   fgImg.onload = () => {
     const extractedCount = store.layers.filter(l => l.id?.startsWith('extracted_')).length
@@ -868,15 +857,13 @@ function applyExtract() {
   }
   fgImg.src = result.foregroundDataUrl
 
-  // 2. 更新背景图层 (填充后的)
   const bgLayer = store.layers.find(l => l.type === 'background')
   if (bgLayer && result.backgroundDataUrl) {
     const bgImg = new Image()
     bgImg.onload = () => {
-        bgLayer.image_data = result.backgroundDataUrl
-        bgLayer.img = bgImg
-        // 强制刷新
-        store.updateLayer(store.layers.indexOf(bgLayer), { image_data: result.backgroundDataUrl })
+      bgLayer.image_data = result.backgroundDataUrl
+      bgLayer.img = bgImg
+      store.updateLayer(store.layers.indexOf(bgLayer), { image_data: result.backgroundDataUrl })
     }
     bgImg.src = result.backgroundDataUrl
   }
@@ -935,7 +922,6 @@ function moveLayer(d: number) {
   }
 }
 
-// 自动在组件卸载前保存，避免关闭对话框后数据丢失未写回节点
 onBeforeUnmount(() => {
   if (resizeObserver && timelineRef.value) {
     resizeObserver.disconnect()
@@ -946,377 +932,748 @@ onBeforeUnmount(() => {
 })
 </script>
 
-<style>
-/* 根容器 */
-.ae-vue-timeline-root {
+<style scoped>
+/* ============================================
+   AE Animator - iOS Style Layout
+   浣跨敤 scoped 鏍峰紡纭繚闅旂
+   ============================================ */
+
+.ae-timeline-root {
   width: 100% !important;
   height: 100% !important;
-  max-width: 100% !important;
-  overflow: hidden;
-  box-sizing: border-box;
-}
-
-/* 主布局 Grid：4 行 */
-.ae-vue-timeline-root .root {
   display: flex !important;
-  flex-direction: column;
+  flex-direction: column !important;
+  background: #000 !important;
+  color: #fff !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  font-size: 13px !important;
+  overflow: hidden !important;
+  user-select: none !important;
+  box-sizing: border-box !important;
+}
+
+.ae-timeline-root * {
+  box-sizing: border-box !important;
+}
+
+/* ========== Header ========== */
+.ae-header {
+  height: 48px !important;
+  min-height: 48px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 16px !important;
+  background: #1c1c1e !important;
+  border-bottom: 1px solid #38383a !important;
+  flex-shrink: 0 !important;
+}
+
+.header-left,
+.header-center,
+.header-right {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.logo {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.logo-icon {
+  width: 28px !important;
+  height: 28px !important;
+  background: linear-gradient(135deg, #bf5af2, #0a84ff) !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 10px !important;
+  font-weight: bold !important;
+}
+
+.logo-text {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+
+.header-divider {
+  width: 1px !important;
+  height: 20px !important;
+  background: #48484a !important;
+  margin: 0 8px !important;
+}
+
+.project-info {
+  font-size: 12px !important;
+  font-family: "SF Mono", Monaco, monospace !important;
+  color: #8e8e93 !important;
+}
+
+/* ========== Buttons ========== */
+.btn {
+  padding: 6px 12px !important;
+  border: none !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.15s !important;
+  white-space: nowrap !important;
+}
+
+.btn:hover { filter: brightness(1.1) !important; }
+.btn:active { transform: scale(0.98) !important; }
+.btn:disabled { opacity: 0.4 !important; cursor: not-allowed !important; }
+
+.btn-primary { background: #0a84ff !important; color: #fff !important; }
+.btn-secondary { background: #3a3a3c !important; color: #fff !important; }
+.btn-ghost { background: transparent !important; color: #8e8e93 !important; }
+.btn-ghost:hover { background: #2c2c2e !important; color: #fff !important; }
+.btn-accent { background: #30d158 !important; color: #fff !important; }
+.btn-close { background: #ff453a !important; color: #fff !important; padding: 6px 10px !important; }
+.btn-small { padding: 4px 8px !important; font-size: 11px !important; }
+
+/* ========== Main Area ========== */
+.ae-main {
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: row !important;
+  overflow: hidden !important;
+  min-height: 0 !important;
+}
+
+/* ========== Inspector (Left Panel) ========== */
+.ae-inspector {
+  width: 260px !important;
+  min-width: 260px !important;
+  max-width: 260px !important;
+  background: #1c1c1e !important;
+  border-right: 1px solid #38383a !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+  padding: 12px !important;
+  gap: 12px !important;
+  flex-shrink: 0 !important;
+}
+
+.inspector-card {
+  background: #2c2c2e !important;
+  border-radius: 12px !important;
+  padding: 12px !important;
+  border: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+.inspector-card.empty {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 60px !important;
+  color: #636366 !important;
+  font-size: 12px !important;
+}
+
+.card-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-bottom: 4px !important;
+}
+
+.layer-title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: 160px !important;
+}
+
+.layer-badge {
+  font-size: 9px !important;
+  padding: 2px 6px !important;
+  border-radius: 4px !important;
+  font-weight: bold !important;
+}
+
+.layer-badge.foreground { background: rgba(10,132,255,0.2) !important; color: #0a84ff !important; }
+.layer-badge.background { background: rgba(191,90,242,0.2) !important; color: #bf5af2 !important; }
+
+.card-subtitle {
+  font-size: 11px !important;
+  color: #636366 !important;
+}
+
+.inspector-section {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.section-title {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  color: #636366 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  padding: 0 4px !important;
+}
+
+.property-list {
+  background: #2c2c2e !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+.property-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 8px 12px !important;
+  border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+.property-row:last-child { border-bottom: none !important; }
+
+.prop-label {
+  font-size: 12px !important;
+  color: #8e8e93 !important;
+}
+
+.prop-input {
+  width: 70px !important;
+  padding: 4px 8px !important;
+  background: #000 !important;
+  border: 1px solid #38383a !important;
+  border-radius: 6px !important;
+  color: #0a84ff !important;
+  font-size: 12px !important;
+  font-family: "SF Mono", Monaco, monospace !important;
+  text-align: right !important;
+}
+
+.prop-input:focus {
+  outline: none !important;
+  border-color: #0a84ff !important;
+}
+
+.prop-unit {
+  font-size: 11px !important;
+  color: #636366 !important;
+  margin-left: 4px !important;
+  min-width: 16px !important;
+}
+
+.prop-value {
+  font-size: 12px !important;
+  color: #8e8e93 !important;
+  font-family: "SF Mono", Monaco, monospace !important;
+}
+
+.slider-row {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 8px !important;
+  padding: 12px !important;
+}
+
+.slider-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+}
+
+.prop-slider {
+  -webkit-appearance: none !important;
   width: 100% !important;
+  height: 4px !important;
+  background: #48484a !important;
+  border-radius: 2px !important;
+  cursor: pointer !important;
+}
+
+.prop-slider::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  width: 16px !important;
+  height: 16px !important;
+  background: #fff !important;
+  border-radius: 50% !important;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
+  cursor: pointer !important;
+}
+
+.tools-grid {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 8px !important;
+}
+
+.tool-btn {
+  padding: 10px !important;
+  background: #2c2c2e !important;
+  border: 1px solid rgba(255,255,255,0.05) !important;
+  border-radius: 10px !important;
+  color: #8e8e93 !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.15s !important;
+}
+
+.tool-btn:hover { background: #3a3a3c !important; color: #fff !important; }
+.tool-btn.active { background: #0a84ff !important; color: #fff !important; border-color: #0a84ff !important; }
+.tool-btn:disabled { opacity: 0.4 !important; cursor: not-allowed !important; }
+
+.tool-settings {
+  background: #2c2c2e !important;
+  border-radius: 10px !important;
+  padding: 12px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.extract-actions {
+  display: flex !important;
+  gap: 8px !important;
+  margin-top: 4px !important;
+}
+
+.action-row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+
+.fit-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-top: 8px !important;
+}
+
+.fit-select {
+  padding: 4px 8px !important;
+  background: #2c2c2e !important;
+  border: 1px solid #38383a !important;
+  border-radius: 6px !important;
+  color: #fff !important;
+  font-size: 11px !important;
+  cursor: pointer !important;
+}
+
+/* ========== Viewport (Center) ========== */
+.ae-viewport {
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: #000 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.viewport-bar {
+  height: 40px !important;
+  min-height: 40px !important;
+  background: #1c1c1e !important;
+  border-bottom: 1px solid #38383a !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 16px !important;
+  flex-shrink: 0 !important;
+}
+
+.duration-text {
+  font-size: 12px !important;
+  color: #636366 !important;
+}
+
+.time-text {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  font-family: "SF Mono", Monaco, monospace !important;
+  color: #0a84ff !important;
+}
+
+.viewport-canvas {
+  flex: 1 !important;
+  position: relative !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background-color: #1c1c1e !important; /* solid dark surface */
+}
+
+/* ========== Timeline (Footer) ========== */
+.ae-timeline {
+  height: 280px !important;
+  min-height: 280px !important;
+  max-height: 280px !important;
+  background: #1c1c1e !important;
+  border-top: 1px solid #38383a !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex-shrink: 0 !important;
+}
+
+.timeline-controls {
+  height: 44px !important;
+  min-height: 44px !important;
+  background: #2c2c2e !important;
+  border-bottom: 1px solid #38383a !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 12px !important;
+  flex-shrink: 0 !important;
+}
+
+.controls-left,
+.controls-center,
+.controls-right {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.controls-left {
+  min-width: 220px !important;
+}
+
+.time-display {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  font-family: "SF Mono", Monaco, monospace !important;
+  color: #0a84ff !important;
+  min-width: 90px !important;
+  text-align: center !important;
+}
+
+.playback-btns {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.pb-btn {
+  background: none !important;
+  border: none !important;
+  color: #636366 !important;
+  font-size: 14px !important;
+  cursor: pointer !important;
+  padding: 4px !important;
+}
+
+.pb-btn:hover { color: #fff !important; }
+
+.play-btn {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  background: #0a84ff !important;
+  border: none !important;
+  color: #fff !important;
+  font-size: 14px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 4px 12px rgba(10,132,255,0.4) !important;
+}
+
+.play-btn:hover { transform: scale(1.05) !important; }
+.play-btn.playing { background: #ff453a !important; box-shadow: 0 4px 12px rgba(255,69,58,0.4) !important; }
+
+.nav-btn {
+  padding: 4px 8px !important;
+  background: #3a3a3c !important;
+  border: none !important;
+  border-radius: 4px !important;
+  color: #8e8e93 !important;
+  font-size: 10px !important;
+  cursor: pointer !important;
+}
+
+.nav-btn:hover:not(:disabled) { background: #48484a !important; color: #fff !important; }
+.nav-btn:disabled { opacity: 0.3 !important; cursor: not-allowed !important; }
+
+/* ========== Timeline Body ========== */
+.timeline-body {
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: row !important;
+  overflow: hidden !important;
+  min-height: 0 !important;
+}
+
+.layers-panel {
+  width: 220px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
+  background: #1c1c1e !important;
+  border-right: 1px solid #38383a !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex-shrink: 0 !important;
+}
+
+.layers-header {
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 12px !important;
+  background: #2c2c2e !important;
+  border-bottom: 1px solid #38383a !important;
+  display: flex !important;
+  align-items: center !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  color: #636366 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  flex-shrink: 0 !important;
+}
+
+.layers-list {
+  flex: 1 !important;
+  overflow-y: auto !important;
+}
+
+.layer-item {
+  height: 32px !important;
+  display: flex !important;
+  align-items: center !important;
+  padding: 0 8px !important;
+  gap: 8px !important;
+  border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+  cursor: pointer !important;
+}
+
+.layer-item:hover { background: #2c2c2e !important; }
+.layer-item.active {
+  background: rgba(10,132,255,0.15) !important;
+  border-left: 2px solid #0a84ff !important;
+}
+
+.expand-icon {
+  font-size: 10px !important;
+  color: #636366 !important;
+  width: 16px !important;
+  text-align: center !important;
+  cursor: pointer !important;
+}
+
+.layer-type {
+  width: 18px !important;
+  height: 18px !important;
+  border-radius: 4px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 9px !important;
+  font-weight: bold !important;
+}
+
+.layer-type.foreground { background: rgba(10,132,255,0.3) !important; color: #0a84ff !important; }
+.layer-type.background { background: rgba(191,90,242,0.3) !important; color: #bf5af2 !important; }
+
+.layer-name {
+  flex: 1 !important;
+  font-size: 12px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.layer-btns {
+  display: flex !important;
+  gap: 4px !important;
+  opacity: 0.5 !important;
+}
+
+.layer-item:hover .layer-btns { opacity: 1 !important; }
+
+.vis-icon, .del-icon {
+  font-size: 11px !important;
+  cursor: pointer !important;
+}
+
+.vis-icon.off { opacity: 0.3 !important; }
+.del-icon:hover { color: #ff453a !important; }
+
+/* ========== Tracks Panel ========== */
+.tracks-panel {
+  flex: 1 !important;
+  background: #18181a !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  position: relative !important;
+  min-width: 0 !important;
+}
+
+.tracks-content {
   height: 100% !important;
-  max-width: 100% !important;
-  min-width: 0;
-  background: #1a1a1a;
-  color: #ddd;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 12px;
-  box-sizing: border-box;
-  overflow: hidden;
+  min-height: 100% !important;
+  position: relative !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
 
-/* 1. 画布区域 */
-.ae-vue-timeline-root .canvas-area { 
-  display: flex; 
-  align-items: center; 
-  justify-content: center; 
-  background: #0f0f0f; 
-  overflow: visible; 
-  border-bottom: 1px solid #333;
-  position: relative;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  /* 画布占据剩余空间的主要部分（约60%-70%），自适应 */
-  flex: 3 1 0;
-  min-height: 0;
-  box-sizing: border-box;
-  padding-bottom: 32px;
+.ruler {
+  height: 32px !important;
+  min-height: 32px !important;
+  background: #2c2c2e !important;
+  border-bottom: 1px solid #38383a !important;
+  position: relative !important;
+  cursor: pointer !important;
+  flex-shrink: 0 !important;
 }
 
-/* 2. 工具栏 */
-.ae-vue-timeline-root .toolbar-area { 
-  display: flex; 
-  align-items: center; 
-  justify-content: space-between; /* 两端对齐 */
-  padding: 0 12px; 
-  background: #252525; 
-  border-bottom: 1px solid #000; 
-  height: 36px;
-  flex: 0 0 36px;
-  min-width: 0;
+.ruler-tick {
+  position: absolute !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  border-left: 1px solid #38383a !important;
+  padding-left: 4px !important;
+  pointer-events: none !important;
 }
 
-.ae-vue-timeline-root .toolbar-left,
-.ae-vue-timeline-root .toolbar-center {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.tick-text {
+  font-size: 10px !important;
+  color: #636366 !important;
 }
 
-.ae-vue-timeline-root .extract-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 6px;
-  background: rgba(0, 188, 212, 0.1);
-  border-radius: 4px;
-  border: 1px solid rgba(0, 188, 212, 0.3);
+.playhead-top {
+  position: absolute !important;
+  top: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  border-left: 6px solid transparent !important;
+  border-right: 6px solid transparent !important;
+  border-top: 10px solid #ff453a !important;
+  transform: translateX(-6px) !important;
+  z-index: 20 !important;
+  pointer-events: none !important;
 }
 
-.ae-vue-timeline-root .tb-btn {
-  padding: 5px 10px;
-  background: #383838;
-  border: 1px solid #4a4a4a;
-  border-radius: 3px;
-  color: #ccc;
-  cursor: pointer;
-  font-size: 11px;
-  white-space: nowrap;
-  transition: all 0.1s;
-}
-.ae-vue-timeline-root .tb-btn:hover { background: #484848; color: #fff; }
-.ae-vue-timeline-root .tb-btn:active { transform: translateY(1px); }
-.ae-vue-timeline-root .tb-btn.active { background: #3a7bc8; color: #fff; border-color: #5dade2; }
-.ae-vue-timeline-root .tb-btn.accent { background: #2d5a3d; color: #fff; border-color: #4caf50; }
-.ae-vue-timeline-root .tb-btn.close { background: #c83a3a; color: #fff; border-color: #e57373; }
-.ae-vue-timeline-root .tb-btn.btn-green { background: #2d5a3d; color: #fff; border-color: #4caf50; }
-.ae-vue-timeline-root .tb-btn.btn-blue { background: #1e3a5f; color: #fff; border-color: #3a7bc8; }
-.ae-vue-timeline-root .tb-btn.btn-amber { background: #5a4a2d; color: #fff; border-color: #ffa726; }
-.ae-vue-timeline-root .tb-btn.btn-red { background: #5a2d2d; color: #fff; border-color: #e57373; }
-.ae-vue-timeline-root .tb-btn.btn-mask { background: #3d2d5a; color: #fff; border-color: #9c27b0; }
-.ae-vue-timeline-root .tb-btn.btn-path { background: #2d5a4a; color: #fff; border-color: #4caf50; }
-.ae-vue-timeline-root .tb-btn.btn-extract { background: #5a4a2d; color: #fff; border-color: #ffa726; }
-.ae-vue-timeline-root .tb-btn.btn-play { background: #2d5a3d; color: #fff; border-color: #4caf50; }
-.ae-vue-timeline-root .tb-btn.btn-run { background: #c8a33a; color: #fff; border-color: #ffa726; }
-.ae-vue-timeline-root .tb-select {
-  background: #2d2d2d;
-  border: 1px solid #3c3c3c;
-  color: #fff;
-  border-radius: 3px;
-  padding: 2px 6px;
-  font-size: 10px;
-  cursor: pointer;
-  margin-left: 4px;
-}
-.ae-vue-timeline-root .tb-sep { width: 1px; height: 18px; background: #444; margin: 0 4px; }
-.ae-vue-timeline-root .tb-time { color: #3a7bc8; font-family: "Consolas", monospace; font-size: 12px; font-weight: bold; min-width: 60px; text-align: center; }
-
-/* 3. 参数区域 */
-.ae-vue-timeline-root .params-area { 
-  display: flex; 
-  align-items: center; 
-  justify-content: flex-start;
-  gap: 12px; 
-  padding: 0 16px; 
-  background: #1f1f1f; 
-  border-bottom: 1px solid #000; 
-  height: 28px;
-  flex: 0 0 28px;
-  min-width: 0;
-  font-size: 11px;
+.tracks-list {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
 }
 
-.ae-vue-timeline-root .param-label { font-weight: bold; color: #ddd; margin-right: 8px; font-size: 11px; }
-.ae-vue-timeline-root .param-sep { width: 1px; height: 16px; background: #444; }
-.ae-vue-timeline-root .param-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.ae-vue-timeline-root .param-group label { color: #888; font-size: 10px; }
-.ae-vue-timeline-root .param-input {
-  width: 50px;
-  padding: 2px 4px;
-  background: #111;
-  border: 1px solid #444;
-  border-radius: 2px;
-  color: #fff;
-  font-size: 11px;
-  font-family: monospace;
-}
-.ae-vue-timeline-root .param-input:focus { border-color: #3a7bc8; outline: none; }
-.ae-vue-timeline-root .param-slider { width: 70px; height: 4px; cursor: pointer; }
-.ae-vue-timeline-root .param-value { color: #aaa; font-size: 10px; font-family: monospace; min-width: 30px; }
-
-/* 4. 底部区域 */
-.ae-vue-timeline-root .bottom-area { 
-  display: flex; 
-  background: #1e1e1e; 
-  overflow: hidden;
-  height: 180px;
-  flex: 0 0 180px;
-  min-width: 0;
+.track-row {
+  height: 32px !important;
+  display: flex !important;
+  align-items: center !important;
+  border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+  position: relative !important;
+  cursor: pointer !important;
 }
 
-/* 图层列表 */
-.ae-vue-timeline-root .layers-sidebar { 
-  width: 240px; 
-  min-width: 240px;
-  border-right: 1px solid #000; 
-  display: flex; 
-  flex-direction: column; 
-  background: #222;
+.track-row:hover { background: rgba(255,255,255,0.02) !important; }
+.track-row.active { background: rgba(10,132,255,0.08) !important; }
+
+.track-bar {
+  height: 16px !important;
+  border-radius: 8px !important;
+  position: relative !important;
+  margin-left: 4px !important;
 }
 
-.ae-vue-timeline-root .layers-header { 
-  height: 28px; 
-  padding: 0 8px; 
-  background: #2a2a2a; 
-  border-bottom: 1px solid #000; 
-  display: flex; 
-  align-items: center; 
-  justify-content: space-between; 
-  color: #ccc; 
-  font-size: 11px; 
+.track-bar.foreground {
+  background: rgba(10,132,255,0.4) !important;
+  border: 1px solid rgba(10,132,255,0.5) !important;
 }
 
-.ae-vue-timeline-root .layers-list { flex: 1; overflow-y: auto; }
-
-.ae-vue-timeline-root .layer-item { 
-  display: flex; 
-  align-items: center; 
-  gap: 6px; 
-  height: 28px; /* 增加高度 */
-  padding: 0 8px; 
-  border-bottom: 1px solid #2a2a2a; 
-  cursor: pointer; 
-  transition: background 0.1s;
-  user-select: none;
-}
-.ae-vue-timeline-root .layer-item:hover { background: #2d2d2d; }
-.ae-vue-timeline-root .layer-item.active { 
-  background: #3a5070; 
-  border-left: 3px solid #5dade2;
-  padding-left: 5px; /* 补偿 border 宽度 */
+.track-bar.background {
+  background: rgba(191,90,242,0.4) !important;
+  border: 1px solid rgba(191,90,242,0.5) !important;
 }
 
-.ae-vue-timeline-root .layer-vis { color: #666; cursor: pointer; font-size: 10px; }
-.ae-vue-timeline-root .layer-vis:hover { color: #ddd; }
-.ae-vue-timeline-root .layer-check {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: #3a7bc8;
-}
-.ae-vue-timeline-root .layer-badge { 
-  padding: 1px 4px; 
-  border-radius: 2px; 
-  color: #111; 
-  font-size: 9px; 
-  font-weight: bold; 
-}
-.ae-vue-timeline-root .layer-badge.background { background: #4db6ac; }
-.ae-vue-timeline-root .layer-badge.foreground { background: #64b5f6; }
-.ae-vue-timeline-root .layer-name { flex: 1; color: #ccc; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ae-vue-timeline-root .layer-del { 
-  background: none; border: none; color: #666; cursor: pointer; font-size: 12px; opacity: 0.5; 
-}
-.ae-vue-timeline-root .layer-del:hover { color: #ff5252; opacity: 1; }
-
-/* 时间轴右侧 */
-.ae-vue-timeline-root .timeline-area { 
-  flex: 1; 
-  position: relative; 
-  overflow-x: auto; /* 横向滚动 */
-  overflow-y: hidden;
-  background: #1a1a1a;
-  min-width: 0;
-  width: 100%;
-  max-width: 100%;
-  margin: 0;
-  padding: 0;
+.mini-kf {
+  position: absolute !important;
+  top: 50% !important;
+  width: 6px !important;
+  height: 6px !important;
+  background: #ff9f0a !important;
+  transform: translate(-3px, -3px) rotate(45deg) !important;
+  border: 1px solid rgba(0,0,0,0.3) !important;
 }
 
-.ae-vue-timeline-root .timeline-content {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  background-image: repeating-linear-gradient(
-    90deg,
-    #222 0,
-    #222 1px,
-    transparent 1px,
-    transparent calc(var(--tick-size, 60px) - 1px)
-  );
-  background-size: var(--tick-size, 60px) 100%;
-  min-width: 100%;
-  width: 100%;
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+.prop-track-row {
+  height: 24px !important;
+  display: flex !important;
+  align-items: center !important;
+  background: rgba(0,0,0,0.2) !important;
+  border-bottom: 1px solid rgba(255,255,255,0.03) !important;
+  cursor: pointer !important;
 }
 
-.ae-vue-timeline-root .timeline-ruler { 
-  height: 28px; 
-  min-height: 28px;
-  background: #222; 
-  border-bottom: 1px solid #000; 
-  position: relative;
-  cursor: pointer;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+.prop-track-row.active { background: rgba(10,132,255,0.05) !important; }
+
+.prop-track {
+  flex: 1 !important;
+  height: 100% !important;
+  position: relative !important;
+  cursor: crosshair !important;
 }
 
-.ae-vue-timeline-root .timeline-ruler .tick { 
-  position: absolute; 
-  top: 0; 
-  bottom: 0; 
-  border-left: 1px solid #444; 
-  padding-left: 2px; 
-  pointer-events: none;
-}
-.ae-vue-timeline-root .tick-label { font-size: 9px; color: #666; }
-
-.ae-vue-timeline-root .playhead-top {
-  position: absolute;
-  top: 0;
-  width: 0;
-  height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-top: 10px solid #ff5252;
-  transform: translateX(-6px);
-  z-index: 10;
-  pointer-events: none;
+.keyframe-dot {
+  position: absolute !important;
+  top: 50% !important;
+  width: 8px !important;
+  height: 8px !important;
+  background: #f0c040 !important;
+  transform: translate(-4px, -4px) rotate(45deg) !important;
+  border: 1px solid rgba(0,0,0,0.4) !important;
+  cursor: grab !important;
+  z-index: 5 !important;
 }
 
-.ae-vue-timeline-root .timeline-tracks { 
-  flex: 1; 
-  position: relative; 
-  overflow-y: auto; 
-  overflow-x: hidden;
-  margin: 0;
-  padding: 0;
-  background-image: repeating-linear-gradient(
-    90deg,
-    #1f1f1f 0,
-    #1f1f1f 1px,
-    transparent 1px,
-    transparent calc(var(--tick-size, 60px) - 1px)
-  );
-  background-size: var(--tick-size, 60px) 100%;
+.keyframe-dot:hover {
+  transform: translate(-4px, -4px) rotate(45deg) scale(1.2) !important;
+  background: #ffdd60 !important;
 }
 
-.ae-vue-timeline-root .track-header {
-  height: 24px;
-  display: flex;
-  align-items: center;
-  background: #252525;
-  border-bottom: 1px solid #333;
-  position: relative;
-}
-.ae-vue-timeline-root .track-bar { 
-  height: 100%; 
-  background: repeating-linear-gradient(
-    90deg,
-    transparent 0,
-    transparent calc(var(--tick-size, 60px) - 1px),
-    #2a2a2a var(--tick-size, 60px)
-  ); 
-  opacity: 0.3;
-  position: absolute;
-  pointer-events: none;
+.keyframe-dot.selected {
+  background: #ff9f0a !important;
+  border-color: #ff453a !important;
+  box-shadow: 0 0 6px #ff9f0a !important;
 }
 
-.ae-vue-timeline-root .track-prop {
-  height: 20px;
-  background: #1c1c1c;
-  border-bottom: 1px solid #222;
-  position: relative;
+.playhead-line {
+  position: absolute !important;
+  top: 32px !important;
+  bottom: 0 !important;
+  width: 1px !important;
+  background: #ff453a !important;
+  pointer-events: none !important;
+  z-index: 10 !important;
 }
 
-.ae-vue-timeline-root .prop-track {
-  width: 100%;
-  height: 100%;
-  position: relative;
-  cursor: crosshair;
-  margin: 0;
-  padding: 0;
+/* ========== Scrollbar ========== */
+.ae-timeline-root ::-webkit-scrollbar {
+  width: 6px !important;
+  height: 6px !important;
 }
 
-/* 关键帧点 */
-.ae-vue-timeline-root .keyframe { 
-  position: absolute; 
-  top: 50%; 
-  width: 8px; 
-  height: 8px; 
-  background: #bbb; 
-  transform: translate(-4px, -4px) rotate(45deg); 
-  border: 1px solid #000; 
-  cursor: grab;
-  z-index: 2;
+.ae-timeline-root ::-webkit-scrollbar-track {
+  background: transparent !important;
 }
-.ae-vue-timeline-root .keyframe:hover { background: #fff; transform: translate(-4px, -4px) rotate(45deg) scale(1.2); }
-.ae-vue-timeline-root .keyframe.selected { background: #ffcc00; border-color: #ff9900; }
 
-/* 全局播放线 */
-.ae-vue-timeline-root .playhead-line {
-  position: absolute;
-  top: 28px; /* ruler height */
-  bottom: 0;
-  width: 1px;
-  background: #ff5252;
-  pointer-events: none;
-  z-index: 5;
+.ae-timeline-root ::-webkit-scrollbar-thumb {
+  background: #48484a !important;
+  border-radius: 3px !important;
+}
+
+.ae-timeline-root ::-webkit-scrollbar-thumb:hover {
+  background: #636366 !important;
 }
 </style>

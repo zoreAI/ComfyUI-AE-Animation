@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<title>AudioMass - Audio Editor</title>
+	<link href="/audiomass/ico.png" rel="shortcut icon">
+	<meta charset="utf-8" />
+	<link rel="manifest" href="/audiomass/manifest.json">
+
+	<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no">
+
+	<meta name="description" content="AudioMass is a free full-featured web-based audio &amp; waveform editing tool"/>
+	<meta property="og:image" content="https://audiomass.co/icon.jpg"/>
+	<meta property="og:title" content="AudioMass">
+	<meta property="og:url" content="https://audiomass.co/">
+	<meta property="og:description" content="AudioMass is a free full-featured web-based audio &amp; waveform editing tool">
+	<meta name="keywords" content="AudioMass, WebAudio, WaveForm, audio editing, free audio editing, audio tool, waveform editor, sound editor, open source">
+	<link rel="apple-touch-icon" href="https://audiomass.co/icon-app.png">
+	<meta name="mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-title" content="AudioMass">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+	<meta name="twitter:card" content="summary_large_image">
+	<meta name="twitter:site" content="@pkalogiros">
+	<meta name="twitter:creator" content="@pkalogiros">
+	<meta name="twitter:title" content="AudioMass - Audio Editor">
+	<meta name="twitter:description" content="AudioMass is a free full-featured web-based audio &amp; waveform editing tool">
+	<meta name="twitter:image" content="https://audiomass.co/icon.jpg">
+
+
+	<link rel="stylesheet" type="text/css" href="/audiomass/main.css">
+</head>
+<body>
+	<div id="app"></div>
+
+	<script src="/audiomass/dist/wavesurfer.js"></script>
+	<script src="/audiomass/dist/plugin/wavesurfer.regions.js"></script>
+	<script src="/audiomass/oneup.js"></script>
+
+	<script src="/audiomass/app.js"></script>
+	<script src="/audiomass/keys.js"></script>
+	<script src="/audiomass/contextmenu.js"></script>
+	<script src="/audiomass/ui-fx.js"></script>
+	<script src="/audiomass/ui.js"></script>
+	<script src="/audiomass/modal.js"></script>
+	<script src="/audiomass/state.js"></script>
+	<script src="/audiomass/engine.js"></script>
+	<script src="/audiomass/actions.js"></script>
+	<script src="/audiomass/drag.js"></script>
+	<script src="/audiomass/recorder.js"></script>
+
+	<script src="/audiomass/welcome.js"></script>
+	<script src="/audiomass/fx-pg-eq.js"></script>
+	<script src="/audiomass/fx-auto.js"></script>
+	<script src="/audiomass/local.js"></script>
+	<script src="/audiomass/id3.js"></script>
+	<script src="/audiomass/lzma.js"></script>
+<!--
+	<script src="/audiomass/multitrack.js"></script>
+	<script src="/audiomass/multitrack-ui.js"></script>
+-->
+	<script>
+		var editor = PKAudioEditor.init ('app');
+		if ('serviceWorker' in navigator) {
+			try {
+			//	navigator.serviceWorker.register( 'sw.js' );
+			} catch ( error ) {}
+		}
+
+		// ComfyUI AudioMass integration
+		(function() {
+			var isInComfyUI = window.parent !== window;
+
+			// Function to notify parent that AudioMass is ready
+			var notifyReady = function() {
+				if (isInComfyUI) {
+					window.parent.postMessage({ type: 'audiomass-ready' }, '*');
+				}
+			};
+
+			// Function to export audio and send to ComfyUI
+			var saveToComfyUI = function(format) {
+				if (!isInComfyUI) return;
+
+				var wavesurfer = PKAudioEditor.engine.wavesurfer;
+				if (!wavesurfer || !wavesurfer.backend || !wavesurfer.backend.buffer) {
+					OneUp('No audio loaded', 1500);
+					return;
+				}
+
+				// Show progress UI
+				PKAudioEditor.fireEvent('WillDownloadFile');
+
+				// Use the same export logic as DownloadFile
+				var worker;
+				if (format === 'mp3') {
+					worker = new Worker('/audiomass/lame.js');
+				} else if (format === 'flac') {
+					worker = new Worker('/audiomass/flac.js');
+				} else {
+					worker = new Worker('/audiomass/wav.js');
+				}
+
+				var originalBuffer = wavesurfer.backend.buffer;
+				var sample_rate = originalBuffer.sampleRate;
+				var channels = originalBuffer.numberOfChannels;
+
+				var data_left = originalBuffer.getChannelData(0);
+				var data_right = null;
+				if (channels === 2) {
+					data_right = originalBuffer.getChannelData(1);
+				}
+
+				var len = data_left.length;
+				var dataAsInt16ArrayLeft = new Int16Array(len);
+				var dataAsInt16ArrayRight = null;
+
+				function convert(n) {
+					var v = n < 0 ? n * 32768 : n * 32767;
+					return Math.max(-32768, Math.min(32768, v));
+				}
+
+				if (data_right) {
+					dataAsInt16ArrayRight = new Int16Array(len);
+					for (var i = 0; i < len; i++) {
+						dataAsInt16ArrayLeft[i] = convert(data_left[i]);
+						dataAsInt16ArrayRight[i] = convert(data_right[i]);
+					}
+				} else {
+					for (var i = 0; i < len; i++) {
+						dataAsInt16ArrayLeft[i] = convert(data_left[i]);
+					}
+				}
+
+				worker.onmessage = function(ev) {
+					if (ev.data.percentage) {
+						PKAudioEditor.fireEvent('DidProgressModal', ev.data.percentage);
+						return;
+					}
+
+					var blob = ev.data;
+					PKAudioEditor.fireEvent('DidProgressModal', 100);
+
+					var reader = new FileReader();
+					reader.onload = function() {
+						var arrayBuffer = reader.result;
+						window.parent.postMessage({
+							type: 'save-to-comfyui',
+							data: arrayBuffer,
+							format: format
+						}, '*');
+					};
+					reader.readAsArrayBuffer(blob);
+
+					worker.terminate();
+				};
+
+				worker.postMessage({
+					sample_rate: sample_rate,
+					kbps: 128,
+					flac_compression: 5,
+					channels: data_right ? 2 : 1
+				});
+				worker.postMessage(dataAsInt16ArrayLeft.buffer, [dataAsInt16ArrayLeft.buffer]);
+				if (data_right) {
+					worker.postMessage(dataAsInt16ArrayRight.buffer, [dataAsInt16ArrayRight.buffer]);
+				} else {
+					worker.postMessage(null);
+				}
+			};
+
+			// Add "Save to ComfyUI" menu item to File menu
+			if (isInComfyUI) {
+				// Wait for UI to be ready
+				setTimeout(function() {
+					// Find the File menu (first .pk_menu inside the header)
+					var fileMenu = document.querySelector('.pk_hdr .pk_btn .pk_menu');
+					if (fileMenu) {
+						// Create the Save to ComfyUI menu item (same structure as other menu items)
+						var menuItem = document.createElement('div');
+						menuItem.className = 'pk_menu_el';
+
+						var btn = document.createElement('button');
+						// Check if audio is already loaded
+						var hasAudio = PKAudioEditor.engine && PKAudioEditor.engine.wavesurfer &&
+							PKAudioEditor.engine.wavesurfer.backend && PKAudioEditor.engine.wavesurfer.backend.buffer;
+						btn.className = 'pk_opt' + (hasAudio ? '' : ' pk_inact');
+						btn.setAttribute('tab-index', '-1');
+						btn.innerHTML = 'Save to ComfyUI';
+						btn.onclick = function() {
+							if (this.classList.contains('pk_inact')) return;
+
+							// Close the menu
+							PKAudioEditor.ui.TopHeader.closeMenu();
+
+							// Show format selection modal
+							new PKSimpleModal({
+								title: 'Save to ComfyUI',
+								ondestroy: function(q) {
+									PKAudioEditor.ui.InteractionHandler.on = false;
+									PKAudioEditor.ui.KeyHandler.removeCallback('modalTemp');
+								},
+								buttons: [
+									{
+										title: 'Save',
+										clss: 'pk_modal_a_accpt',
+										callback: function(q) {
+											var format = 'mp3';
+											var radios = q.el_body.getElementsByClassName('pk_check');
+											for (var i = 0; i < radios.length; i++) {
+												if (radios[i].checked) {
+													format = radios[i].value;
+													break;
+												}
+											}
+											saveToComfyUI(format);
+											q.Destroy();
+										}
+									}
+								],
+								body: '<div class="pk_row" style="padding-bottom:4px"><label style="display:inline">Format</label>' +
+									'<input type="radio" class="pk_check" id="comfy_mp3" name="comfyfmt" checked value="mp3">' +
+									'<label for="comfy_mp3">mp3</label>' +
+									'<input type="radio" class="pk_check" id="comfy_wav" name="comfyfmt" value="wav">' +
+									'<label for="comfy_wav">wav</label>' +
+									'<input type="radio" class="pk_check" id="comfy_flac" name="comfyfmt" value="flac">' +
+									'<label for="comfy_flac">flac</label>' +
+									'</div>',
+								setup: function(q) {
+									PKAudioEditor.fireEvent('RequestPause');
+									PKAudioEditor.ui.InteractionHandler.checkAndSet('modal');
+									PKAudioEditor.ui.KeyHandler.addCallback('modalTemp', function(e) {
+										q.Destroy();
+									}, [27]);
+								}
+							}).Show();
+						};
+
+						menuItem.appendChild(btn);
+
+						// Insert after the first menu item (Export / Download)
+						var firstItem = fileMenu.querySelector('.pk_menu_el');
+						if (firstItem && firstItem.nextSibling) {
+							fileMenu.insertBefore(menuItem, firstItem.nextSibling);
+						} else if (firstItem) {
+							firstItem.parentNode.insertBefore(menuItem, firstItem.nextSibling);
+						} else {
+							fileMenu.appendChild(menuItem);
+						}
+
+						// Listen for file load/unload events to enable/disable the menu item
+						PKAudioEditor.listenFor('DidUnloadFile', function() {
+							btn.classList.add('pk_inact');
+						});
+						PKAudioEditor.listenFor('DidLoadFile', function() {
+							btn.classList.remove('pk_inact');
+						});
+					}
+				}, 1000);
+			}
+
+			// Listen for messages from parent window (ComfyUI)
+			window.addEventListener('message', function(event) {
+				if (event.data && event.data.type === 'check-ready') {
+					notifyReady();
+				} else if (event.data && event.data.type === 'load-audio') {
+					var arrayBuffer = event.data.data;
+					if (arrayBuffer && PKAudioEditor.engine) {
+						PKAudioEditor.engine.LoadArrayBuffer(new Blob([arrayBuffer]));
+					}
+				} else if (event.data && event.data.type === 'save-to-comfyui-result') {
+					PKAudioEditor.fireEvent('DidDownloadFile');
+					if (event.data.success) {
+						OneUp('Saved to ComfyUI: ' + event.data.path, 3000);
+					} else {
+						OneUp('Save failed: ' + event.data.error, 3000);
+					}
+				}
+			});
+
+			notifyReady();
+		})();
+	</script>
+</body>
+</html>

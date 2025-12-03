@@ -43,7 +43,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, watch, onUnmounted } from 'vue'
 import { useTimelineStore } from '@/stores/timelineStore'
 import TGPU from 'typegpu'
 
@@ -78,8 +78,6 @@ let gpuPipeline: GPURenderPipeline | null = null
 let gpuUniformBuffer: GPUBuffer | null = null
 let gpuBindGroupLayout: GPUBindGroupLayout | null = null
 
-let resizeObserver: ResizeObserver | null = null
-
 onMounted(async () => {
   // 先初始化 Canvas 2D 作为后备
   if (canvasRef.value) {
@@ -91,103 +89,14 @@ onMounted(async () => {
   
   // 尝试初始化 WebGPU
   await initWebGPU()
-  
-  // 等待 DOM 完全渲染后再更新尺寸
-  await nextTick()
-  // 使用 setTimeout 确保容器尺寸已计算
-  setTimeout(() => {
-    updateCanvasDisplaySize()
-  }, 0)
-  
-  // 监听容器尺寸变化
-  if (containerRef.value && typeof ResizeObserver !== 'undefined') {
-    resizeObserver = new ResizeObserver(() => {
-      // 使用 requestAnimationFrame 避免频繁更新
-      requestAnimationFrame(() => {
-        updateCanvasDisplaySize()
-      })
-    })
-    resizeObserver.observe(containerRef.value)
-  }
-  
-  // 监听项目尺寸变化，更新显示尺寸
-  watch(() => [store.project.width, store.project.height], () => {
-    nextTick(() => {
-      updateCanvasDisplaySize()
-    })
-  })
-  
+
   scheduleRender()
 })
 
 onUnmounted(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-    resizeObserver = null
-  }
   imageCache.clear()
   destroyGPU()
 })
-
-function updateCanvasDisplaySize() {
-  if (!containerRef.value) return
-  
-  const container = containerRef.value
-  const containerWidth = container.clientWidth
-  const containerHeight = container.clientHeight
-  
-  // 如果容器尺寸为 0，尝试使用 offsetWidth/offsetHeight
-  const actualWidth = containerWidth || container.offsetWidth || 0
-  const actualHeight = containerHeight || container.offsetHeight || 0
-  
-  if (actualWidth === 0 || actualHeight === 0) {
-    // 如果还是 0，延迟重试
-    setTimeout(() => {
-      updateCanvasDisplaySize()
-    }, 100)
-    return
-  }
-  
-  const projectWidth = store.project.width || 1280
-  const projectHeight = store.project.height || 720
-  const aspectRatio = projectWidth / projectHeight
-  
-  // 计算适合容器的尺寸，保持宽高比
-  // 留出一些边距（10px）
-  const padding = 10
-  const maxWidth = actualWidth - padding * 2
-  const maxHeight = actualHeight - padding * 2
-  
-  let displayWidth = maxWidth
-  let displayHeight = maxWidth / aspectRatio
-  
-  if (displayHeight > maxHeight) {
-    displayHeight = maxHeight
-    displayWidth = maxHeight * aspectRatio
-  }
-  
-  // 确保最小尺寸
-  if (displayWidth < 100) displayWidth = 100
-  if (displayHeight < 100) displayHeight = 100
-  
-  // 设置 canvas 的显示尺寸（CSS）
-  const canvas = canvasRef.value
-  const gpuCanvas = gpuCanvasRef.value
-  
-  if (canvas) {
-    canvas.style.width = displayWidth + 'px'
-    canvas.style.height = displayHeight + 'px'
-    canvas.style.maxWidth = '100%'
-    canvas.style.maxHeight = '100%'
-  }
-  
-  if (gpuCanvas) {
-    gpuCanvas.style.width = displayWidth + 'px'
-    gpuCanvas.style.height = displayHeight + 'px'
-    gpuCanvas.style.maxWidth = '100%'
-    gpuCanvas.style.maxHeight = '100%'
-  }
-}
 
 
 // 初始化 WebGPU
@@ -1536,11 +1445,12 @@ canvas:focus {
 }
 
 .canvas-info {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
+  /* 确保在画布下方显示，使用 relative 定位 */
+  position: relative;
   margin-top: 8px;
+  margin-left: auto;
+  margin-right: auto;
+  width: fit-content;
   background: rgba(0, 0, 0, 0.8);
   color: #aaa;
   font-size: 11px;
@@ -1549,6 +1459,7 @@ canvas:focus {
   white-space: nowrap;
   z-index: 10;
   pointer-events: none;
+  text-align: center;
 }
 
 .gpu-badge {

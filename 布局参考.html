@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AE Animator UI Preview (iOS Style)</title>
+    <!-- 引入 Tailwind CSS CDN，无需配置直接渲染样式 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 引入系统字体 */
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        
+        /* 棋盘格背景 */
+        .checkerboard-bg {
+            background-image: linear-gradient(45deg, #1c1c1e 25%, transparent 25%), 
+                              linear-gradient(-45deg, #1c1c1e 25%, transparent 25%), 
+                              linear-gradient(45deg, transparent 75%, #1c1c1e 75%), 
+                              linear-gradient(-45deg, transparent 75%, #1c1c1e 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+        }
+
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #48484a; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #636366; }
+
+        /* 滑块样式重置 */
+        input[type=range] { -webkit-appearance: none; background: transparent; }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px; width: 16px;
+            border-radius: 50%;
+            background: #ffffff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+            margin-top: -6px;
+            cursor: pointer;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 4px;
+            cursor: pointer; background: #48484a; border-radius: 2px;
+        }
+    </style>
+</head>
+<body class="bg-black text-white h-screen w-screen overflow-hidden flex flex-col select-none">
+
+    <!-- 1. 顶部栏 (Header) -->
+    <header class="h-12 flex items-center justify-between px-4 bg-[#1c1c1e]/90 backdrop-blur-md border-b border-[#38383a] z-50">
+        <div class="flex items-center gap-4">
+            <div class="font-bold text-lg tracking-tight text-gray-100 flex items-center gap-2">
+                <div class="w-6 h-6 bg-gradient-to-br from-purple-600 to-blue-600 rounded-md flex items-center justify-center text-[10px]">AE</div>
+                AE Animator
+            </div>
+            <div class="h-4 w-[1px] bg-gray-600 mx-2"></div>
+            <div class="flex gap-1">
+                <button class="px-3 py-1.5 text-xs font-medium text-gray-300 rounded hover:bg-gray-700 transition">Save</button>
+                <button class="px-3 py-1.5 text-xs font-medium text-gray-300 rounded hover:bg-gray-700 transition">Load</button>
+            </div>
+        </div>
+        <div class="text-xs text-gray-400 font-medium font-mono">1920x1080 @ 60 FPS</div>
+        <div class="flex gap-2">
+            <button class="px-3 py-1.5 text-xs font-semibold bg-[#0A84FF] hover:bg-blue-500 text-white rounded shadow transition">+ FG Layer</button>
+            <button class="px-3 py-1.5 text-xs font-medium bg-[#3a3a3c] hover:bg-gray-600 text-gray-200 rounded shadow transition">+ BG Layer</button>
+        </div>
+    </header>
+
+    <!-- 中间主区域 -->
+    <div class="flex-1 flex overflow-hidden">
+        
+        <!-- 2. 左侧属性面板 (Inspector) -->
+        <aside class="w-[280px] bg-[#1c1c1e] border-r border-[#38383a] flex flex-col overflow-y-auto p-4 space-y-4 z-40">
+            <!-- 选中图层卡片 -->
+            <div class="bg-[#2c2c2e] rounded-xl p-3 border border-white/5 shadow-sm">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-gray-100">Character_Run</span>
+                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-200 uppercase font-bold">FG</span>
+                </div>
+                <div class="text-xs text-gray-400">Layer 1 &bull; Image Asset</div>
+            </div>
+
+            <!-- 变换属性 -->
+            <div>
+                <div class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2 px-1">Transform</div>
+                <div class="bg-[#2c2c2e] rounded-xl overflow-hidden border border-white/5">
+                    <div class="flex justify-between items-center px-3 py-2 text-xs border-b border-gray-700/50">
+                        <span class="text-gray-300">Position X</span>
+                        <span class="text-blue-400 font-mono">960.0</span>
+                    </div>
+                    <div class="flex justify-between items-center px-3 py-2 text-xs border-b border-gray-700/50">
+                        <span class="text-gray-300">Position Y</span>
+                        <span class="text-blue-400 font-mono">540.0</span>
+                    </div>
+                    <div class="flex justify-between items-center px-3 py-2 text-xs border-b border-gray-700/50">
+                        <span class="text-gray-300">Scale</span>
+                        <span class="text-blue-400 font-mono">100%</span>
+                    </div>
+                    <div class="p-3">
+                        <div class="flex justify-between text-xs text-gray-400 mb-2">
+                            <span>Opacity</span>
+                            <span>100%</span>
+                        </div>
+                        <input type="range" class="w-full" value="100">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 工具 -->
+            <div>
+                <div class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2 px-1">Tools</div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button class="py-2 text-xs font-medium bg-[#0A84FF] text-white rounded-lg shadow-lg shadow-blue-900/30">Mask Mode</button>
+                    <button class="py-2 text-xs font-medium bg-[#2c2c2e] text-gray-400 rounded-lg hover:bg-[#3a3a3c]">Eraser</button>
+                    <button class="py-2 text-xs font-medium bg-[#2c2c2e] text-gray-400 rounded-lg hover:bg-[#3a3a3c]">Path Tool</button>
+                    <button class="py-2 text-xs font-medium bg-[#2c2c2e] text-blue-400 rounded-lg hover:bg-[#3a3a3c]">AI Extract</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 3. 中间画布 (Viewport) -->
+        <main class="flex-1 bg-[#000] relative flex flex-col min-w-0">
+            <!-- 画布顶栏 -->
+            <div class="h-10 bg-[#1c1c1e] border-b border-[#38383a] flex items-center justify-between px-4">
+                <div class="flex gap-1 text-xs">
+                    <button class="px-2 py-1 rounded bg-[#3a3a3c] text-white">100%</button>
+                    <button class="px-2 py-1 rounded hover:bg-[#3a3a3c] text-gray-400">Fit</button>
+                </div>
+                <div class="text-xs text-gray-500">Duration: 00:00:10:00</div>
+            </div>
+            
+            <!-- 画布内容区 -->
+            <div class="flex-1 checkerboard-bg relative flex items-center justify-center overflow-hidden">
+                <!-- 模拟画布 -->
+                <div class="w-[640px] h-[360px] bg-black/50 shadow-2xl border border-white/10 relative">
+                    <!-- 模拟内容 -->
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <div class="text-center">
+                            <div class="text-6xl mb-2">🏃</div>
+                            <div class="text-xs text-gray-500 font-mono">Preview Canvas</div>
+                        </div>
+                    </div>
+                    <!-- 变换框 (Gizmo) -->
+                    <div class="absolute top-1/4 left-1/3 w-1/3 h-1/2 border border-[#0A84FF]">
+                        <div class="absolute -top-1 -left-1 w-2 h-2 bg-white border border-[#0A84FF]"></div>
+                        <div class="absolute -top-1 -right-1 w-2 h-2 bg-white border border-[#0A84FF]"></div>
+                        <div class="absolute -bottom-1 -left-1 w-2 h-2 bg-white border border-[#0A84FF]"></div>
+                        <div class="absolute -bottom-1 -right-1 w-2 h-2 bg-white border border-[#0A84FF]"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 4. 底部时间轴 (Timeline) -->
+    <footer class="h-[300px] bg-[#1c1c1e] border-t border-[#38383a] flex flex-col flex-shrink-0 z-50">
+        <!-- 时间轴控制条 -->
+        <div class="h-10 border-b border-[#38383a] bg-[#2c2c2e] flex items-center px-2 justify-between">
+            <div class="w-[280px] flex items-center gap-2 px-2 border-r border-[#38383a]/50 h-full">
+                <button class="text-[10px] px-2 py-1 bg-[#3a3a3c] rounded text-gray-300 border border-white/5">+ Keyframe</button>
+            </div>
+            <div class="flex items-center gap-4">
+                <span class="text-blue-400 font-mono text-sm">00:00:02:15</span>
+                <div class="flex items-center gap-2">
+                    <button class="text-gray-400 hover:text-white">⏮</button>
+                    <button class="w-8 h-8 flex items-center justify-center bg-[#0A84FF] text-white rounded-full hover:bg-blue-500 shadow-lg shadow-blue-900/50">▶</button>
+                    <button class="text-gray-400 hover:text-white">⏭</button>
+                </div>
+            </div>
+            <div class="w-[100px] px-4">
+                <input type="range" class="w-full h-1 bg-gray-600 rounded">
+            </div>
+        </div>
+
+        <div class="flex-1 flex overflow-hidden">
+            <!-- 图层列表 -->
+            <div class="w-[280px] bg-[#1c1c1e] border-r border-[#38383a] flex flex-col overflow-y-auto">
+                <div class="h-8 bg-[#252527] px-4 flex items-center text-[10px] text-gray-500 font-bold uppercase tracking-wider border-b border-[#38383a]">Layers</div>
+                
+                <!-- Layer 1 (Active) -->
+                <div class="h-8 flex items-center px-2 bg-[#0A84FF]/20 border-l-2 border-[#0A84FF] border-b border-[#2c2c2e]">
+                    <span class="text-gray-400 text-[10px] w-4">▼</span>
+                    <div class="w-4 h-4 mr-2 bg-blue-900 text-blue-200 rounded text-[9px] flex items-center justify-center font-bold">F</div>
+                    <span class="text-xs text-white flex-1 font-medium">Character_Run</span>
+                    <span class="text-xs text-gray-400 mr-2">👁</span>
+                    <span class="text-xs text-gray-400">🔒</span>
+                </div>
+                
+                <!-- Layer 2 -->
+                <div class="h-8 flex items-center px-2 hover:bg-[#2c2c2e] border-l-2 border-transparent border-b border-[#2c2c2e] opacity-70">
+                    <span class="text-gray-500 text-[10px] w-4">▶</span>
+                    <div class="w-4 h-4 mr-2 bg-purple-900 text-purple-200 rounded text-[9px] flex items-center justify-center font-bold">B</div>
+                    <span class="text-xs text-gray-300 flex-1 font-medium">Forest_Background</span>
+                    <span class="text-xs text-gray-600 mr-2">👁</span>
+                    <span class="text-xs text-gray-600">🔓</span>
+                </div>
+
+                 <!-- Layer 3 -->
+                 <div class="h-8 flex items-center px-2 hover:bg-[#2c2c2e] border-l-2 border-transparent border-b border-[#2c2c2e] opacity-70">
+                    <span class="text-gray-500 text-[10px] w-4">▶</span>
+                    <div class="w-4 h-4 mr-2 bg-green-900 text-green-200 rounded text-[9px] flex items-center justify-center font-bold">F</div>
+                    <span class="text-xs text-gray-300 flex-1 font-medium">Light_Overlay</span>
+                    <span class="text-xs text-gray-600 mr-2">👁</span>
+                    <span class="text-xs text-gray-600">🔓</span>
+                </div>
+            </div>
+
+            <!-- 时间轨道区域 -->
+            <div class="flex-1 bg-[#18181a] relative overflow-x-auto overflow-y-hidden">
+                <!-- 标尺 -->
+                <div class="h-8 bg-[#252527] border-b border-[#38383a] flex items-end sticky top-0 z-10">
+                    <div class="flex text-[10px] text-gray-500 w-full">
+                        <div class="w-20 border-l border-[#38383a] pl-1">00s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">01s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">02s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">03s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">04s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">05s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">06s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">07s</div>
+                        <div class="w-20 border-l border-[#38383a] pl-1">08s</div>
+                    </div>
+                </div>
+
+                <!-- 播放头 -->
+                <div class="absolute top-0 bottom-0 left-[210px] w-[1px] bg-[#FF3B30] z-20 pointer-events-none">
+                    <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-[#FF3B30] absolute -left-[5.5px] top-0"></div>
+                </div>
+
+                <!-- 轨道内容 -->
+                <div class="flex flex-col">
+                    <!-- Track 1 -->
+                    <div class="h-8 border-b border-[#2c2c2e] relative flex items-center bg-[#2c2c2e]/30">
+                        <div class="h-4 bg-blue-600/60 border border-blue-500/50 rounded-full absolute left-4 w-[300px] flex items-center">
+                             <!-- Keyframes -->
+                            <div class="w-2 h-2 bg-yellow-400 rotate-45 border border-black absolute left-2"></div>
+                            <div class="w-2 h-2 bg-yellow-400 rotate-45 border border-black absolute left-[200px]"></div>
+                        </div>
+                    </div>
+                    <!-- Track 2 -->
+                    <div class="h-8 border-b border-[#2c2c2e] relative flex items-center">
+                        <div class="h-4 bg-purple-600/60 border border-purple-500/50 rounded-full absolute left-0 w-[600px]"></div>
+                    </div>
+                     <!-- Track 3 -->
+                     <div class="h-8 border-b border-[#2c2c2e] relative flex items-center">
+                        <div class="h-4 bg-green-600/60 border border-green-500/50 rounded-full absolute left-[100px] w-[200px]"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
