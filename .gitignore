@@ -51,3 +51,7 @@ demo.html
 
 # Node.js portable installation
 node-v*/
+
+# Local only directories (keep locally but don't track in git)
+ComfyUI-AudioMass-master/
+backup/js_legacy/
