@@ -21,6 +21,25 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+      
+      - name: Debug - Check pyproject.toml version
+        run: |
+          echo "Repository owner: ${{ github.repository_owner }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "=== Current directory ==="
+          pwd
+          ls -la
+          echo "=== pyproject.toml content ==="
+          cat pyproject.toml
+          echo "=== Version line ==="
+          grep -E '^version\s*=' pyproject.toml || echo "Version not found"
+          echo "=== Extract version with sed ==="
+          VERSION=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          echo "Extracted version: $VERSION"
+      
       - name: Publish Custom Node
         uses: Comfy-Org/publish-node-action@v1
         with:
