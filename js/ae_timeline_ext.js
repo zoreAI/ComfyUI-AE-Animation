@@ -125,16 +125,89 @@ async function openAETimelineForNode(node) {
   dialog.showModal();
 }
 
+function getGraph() {
+  return (
+    app?.graph ||
+    app?.canvas?.graph ||
+    (window.LGraphCanvas && window.LGraphCanvas.active_canvas && window.LGraphCanvas.active_canvas.graph) ||
+    null
+  );
+}
+
 function getSelectedAEAnimationNode() {
   const canvas = window.LGraphCanvas && window.LGraphCanvas.active_canvas;
   if (!canvas) return null;
   const selected = canvas.selected_nodes || {};
   const nodes = Object.values(selected);
-  return nodes.find((n) => n && n.constructor && n.constructor.comfyClass === "AEAnimationCore") || null;
+  return nodes.find((n) => n && n.constructor && n.constructor.comfyClass === "AEAnimation") || null;
+}
+
+function findExistingAEAnimation(graph) {
+  if (!graph) return null;
+  if (typeof graph.findNodesByType === "function") {
+    const list = graph.findNodesByType("AEAnimation");
+    if (list && list.length) return list[0];
+  }
+  if (Array.isArray(graph._nodes)) {
+    const found = graph._nodes.find((n) => n?.constructor?.comfyClass === "AEAnimation");
+    if (found) return found;
+  }
+  return null;
+}
+
+function createAEAnimationNode() {
+  try {
+    const LiteGraph = window.LiteGraph;
+    const graph = getGraph();
+    if (!LiteGraph || !graph) return null;
+    const node = LiteGraph.createNode("AEAnimation");
+    if (!node) return null;
+    const canvas = window.LGraphCanvas && window.LGraphCanvas.active_canvas;
+    if (canvas?.convertEventToCanvas) {
+      node.pos = canvas.convertEventToCanvas([200, 200]);
+    } else {
+      node.pos = [200, 200];
+    }
+    graph.add(node);
+    canvas?.setDirty?.(true, true);
+    canvas?.selectNode?.(node, false);
+    return node;
+  } catch (e) {
+    console.error("[AE Timeline] Failed to create AEAnimation node", e);
+    return null;
+  }
+}
+
+function ensureAEAnimationNode() {
+  const graph = getGraph();
+  let node = getSelectedAEAnimationNode();
+  if (!node) node = findExistingAEAnimation(graph);
+  if (!node) node = createAEAnimationNode();
+  return node;
 }
 
 app.registerExtension({
   name: "ComfyUI.AEAnimation.TimelineExt",
+  // Hide advanced widgets on the node UI for a cleaner look
+  nodeCreated(node) {
+    if (!node || node.constructor?.comfyClass !== "AEAnimation") return;
+    const hideSet = new Set(["mask_expansion", "mask_feather", "layers_keyframes", "start_frame", "end_frame"]);
+    if (!node.widgets) return;
+    node.widgets.forEach((w) => {
+      if (hideSet.has(w.name)) {
+        w.computeSize = () => [0, 0];
+        w.draw = () => {};
+        w.hidden = true;
+      }
+    });
+    // Reduce height after hiding
+    if (typeof node.computeSize === "function") {
+      const sz = node.computeSize(node.size);
+      if (Array.isArray(sz) && sz.length === 2) {
+        node.size[1] = Math.min(node.size[1], sz[1]);
+      }
+    }
+  },
   setup() {
     const comfyAPI = window.comfyAPI;
     const ComfyButton = comfyAPI && comfyAPI.button && comfyAPI.button.ComfyButton;
@@ -146,9 +219,9 @@ app.registerExtension({
         tooltip: "AE Animation Timeline",
         content: "AE Timeline",
         action: async () => {
-          const node = getSelectedAEAnimationNode();
+          const node = ensureAEAnimationNode();
           if (!node) {
-            alert("请先选中一个 AEAnimationCore 节点再打开 AE Timeline");
+            alert("无法创建或获取 AE Animation 节点");
             return;
           }
           await openAETimelineForNode(node);
@@ -158,7 +231,7 @@ app.registerExtension({
   },
   getNodeMenuItems(node) {
     const nodeClass = node && node.constructor && node.constructor.comfyClass;
-    if (nodeClass !== "AEAnimationCore") return [];
+    if (nodeClass !== "AEAnimation") return [];
 
     return [
       null,

@@ -11,62 +11,45 @@ import numpy as np
 import torch
 from PIL import Image
 from comfy_api.latest import ComfyExtension, io
-from server import PromptServer
 from typing_extensions import override
 
 
-def _tensor_to_b64(img_tensor: torch.Tensor) -> str | None:
+def _safe_int(value: Any, default: int = 0) -> int:
     try:
-        tensor = img_tensor.float().cpu()
-        if tensor.dtype != torch.uint8:
-            tensor = torch.clamp(tensor, 0, 1) * 255.0
-        
-        # Handle batch dimension: if 4D [B, H, W, C], take first image
-        if tensor.ndim == 4:
-            array = tensor[0].numpy().astype("uint8")
-        else:
-            array = tensor.numpy().astype("uint8")
-        
-        mode_map = {4: "RGBA", 3: "RGB", 2: "L"}
-        if array.ndim == 3:
-            mode = mode_map.get(array.shape[2])
-            if not mode:
-                return None
-            img = Image.fromarray(array, mode)
-        elif array.ndim == 2:
-            img = Image.fromarray(array, "L").convert("RGB")
-        else:
-            return None
-        buffer = python_io.BytesIO()
-        img.save(buffer, format="PNG")
-        payload = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        return f"data:image/png;base64,{payload}"
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"[AE] tensor_to_b64 error: {exc}")
-        return None
+        if isinstance(value, str) and value.strip():
+            return int(value)
+        if value is None:
+            return default
+        return int(value)
+    except (ValueError, TypeError):
+        return default
 
 
-def _ensure_list(obj: Any) -> List[Any]:
-    if obj is None:
+def _parse_layers(layers_json: str) -> List[Dict[str, Any]]:
+    if not layers_json:
         return []
-    if isinstance(obj, (list, tuple)):
-        return list(obj)
-    return [obj]
+    try:
+        data = json.loads(layers_json)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "layers" in data:
+            return data.get("layers") or []
+    except Exception:
+        logging.warning("[AE] Failed to parse layers_keyframes JSON")
+    return []
 
 
-class AEAnimationCore(io.ComfyNode):
+class AEAnimation(io.ComfyNode):
+    """
+    Single node that reads timeline data from the AE Timeline UI (layers_keyframes)
+    and directly renders frames + masks.
+    """
+
     @classmethod
     def define_schema(cls) -> io.Schema:
-        supports_bool = hasattr(io, "Bool")
-        preview_input = (
-            io.Bool.Input("ui_preview_only", default=False, optional=True)
-            if supports_bool
-            else io.Int.Input("ui_preview_only", default=0, min=0, max=1, optional=True)
-        )
-
         schema = io.Schema(
-            node_id="AEAnimationCore",
-            display_name="AE Animation Core",
+            node_id="AEAnimation",
+            display_name="AE Animation",
             category="AE Animation",
             inputs=[
                 io.Int.Input("width", default=1280, min=64, max=8192),
@@ -76,203 +59,6 @@ class AEAnimationCore(io.ComfyNode):
                 io.Int.Input("mask_expansion", default=0, min=-255, max=255),
                 io.Int.Input("mask_feather", default=0, min=0, max=100),
                 io.String.Input("layers_keyframes", default="[]", multiline=True),
-                io.Image.Input("foreground_images", optional=True),
-                io.Image.Input("background_image", optional=True),
-                preview_input,
-                io.String.Input("unique_id", default="", optional=True),
-            ],
-            outputs=[
-                io.String.Output("animation"),
-                io.String.Output("animation_preview"),
-            ],
-        )
-        schema.output_node = True
-        return schema
-
-    @classmethod
-    def _safe_int(cls, value: Any, default: int = 0) -> int:
-        try:
-            if isinstance(value, str) and value.strip():
-                return int(value)
-            if value is None:
-                return default
-            return int(value)
-        except (ValueError, TypeError):
-            return default
-
-    @classmethod
-    def _build_layer(cls, layer_id: str, layer_name: str, layer_type: str,
-                     image_b64: str, saved_data: Dict[str, Any]) -> Dict[str, Any]:
-        layer: Dict[str, Any] = {
-            "id": layer_id,
-            "name": layer_name,
-            "type": layer_type,
-            "image_data": image_b64,
-            "keyframes": saved_data.get("keyframes", {}),
-        }
-        if layer_type == "background":
-            layer["bg_mode"] = saved_data.get("bg_mode", "fit")
-            # Preserve background transform
-            if "x" in saved_data:
-                layer["x"] = saved_data["x"]
-            if "y" in saved_data:
-                layer["y"] = saved_data["y"]
-            if "scale" in saved_data:
-                layer["scale"] = saved_data["scale"]
-            if "rotation" in saved_data:
-                layer["rotation"] = saved_data["rotation"]
-        else:
-            # Preserve foreground transform
-            if "x" in saved_data:
-                layer["x"] = saved_data["x"]
-            if "y" in saved_data:
-                layer["y"] = saved_data["y"]
-            if "scale" in saved_data:
-                layer["scale"] = saved_data["scale"]
-            if "rotation" in saved_data:
-                layer["rotation"] = saved_data["rotation"]
-            if "opacity" in saved_data:
-                layer["opacity"] = saved_data["opacity"]
-            if "mask_size" in saved_data:
-                layer["mask_size"] = saved_data["mask_size"]
-            if saved_data.get("customMask"):
-                layer["customMask"] = saved_data["customMask"]
-            if saved_data.get("bezierPath"):
-                layer["bezierPath"] = saved_data["bezierPath"]
-        # Preserve cached image if exists
-        if saved_data.get("image_data"):
-            layer["image_data"] = saved_data["image_data"]
-        return layer
-
-    @classmethod
-    def execute(
-        cls,
-        width: int,
-        height: int,
-        fps: int,
-        total_frames: int,
-        mask_expansion: int,
-        mask_feather: int,
-        layers_keyframes: str,
-        foreground_images: Optional[torch.Tensor] = None,
-        background_image: Optional[torch.Tensor] = None,
-        ui_preview_only: Any = False,
-        unique_id: Optional[str] = None,
-    ) -> io.NodeOutput:
-        # Calculate duration from total_frames and fps
-        duration = total_frames / max(fps, 1)
-
-        project_data = {
-            "width": width,
-            "height": height,
-            "fps": fps,
-            "duration": duration,
-            "total_frames": total_frames,
-            "mask_expansion": mask_expansion,
-            "mask_feather": mask_feather,
-        }
-
-        try:
-            saved_keyframes = json.loads(layers_keyframes) if layers_keyframes else []
-        except json.JSONDecodeError:
-            saved_keyframes = []
-
-        layers: List[Dict[str, Any]] = []
-        
-        # Process background image
-        if background_image is not None:
-            bg_b64 = _tensor_to_b64(background_image)
-            if bg_b64:
-                existing = next((k for k in saved_keyframes if k.get("id") == "background"), {})
-                layers.append(cls._build_layer("background", "Background", "background", bg_b64, existing))
-        else:
-            # Try to restore from cached data
-            existing = next((k for k in saved_keyframes if k.get("id") == "background" and k.get("image_data")), None)
-            if existing:
-                # Ensure all required fields are present
-                if "name" not in existing:
-                    existing["name"] = "Background"
-                if "type" not in existing:
-                    existing["type"] = "background"
-                layers.append(existing)
-
-        # Process foreground images
-        processed_ids = set()
-        if foreground_images is not None:
-            # Handle batch dimension: if 4D [B, H, W, C], split into list of images
-            if isinstance(foreground_images, torch.Tensor) and foreground_images.ndim == 4:
-                fg_tensors = [foreground_images[i:i+1] for i in range(foreground_images.shape[0])]
-            else:
-                fg_tensors = _ensure_list(foreground_images)
-            
-            for idx, tensor in enumerate(fg_tensors):
-                if tensor is None:
-                    continue
-                fg_b64 = _tensor_to_b64(tensor)
-                if not fg_b64:
-                    continue
-                layer_id = f"layer_{idx}"
-                processed_ids.add(layer_id)
-                existing = next((k for k in saved_keyframes if k.get("id") == layer_id), {})
-                layers.append(cls._build_layer(layer_id, f"Layer {idx+1}", "foreground", fg_b64, existing))
-        
-        # Add any additional foreground layers from saved_keyframes (e.g., extracted layers)
-        extracted_count = 0
-        for saved_layer in saved_keyframes:
-            if (saved_layer.get("type") == "foreground" and 
-                saved_layer.get("image_data") and 
-                saved_layer.get("id") not in processed_ids):
-                layers.append(saved_layer)
-                if saved_layer.get("id", "").startswith("extracted_"):
-                    extracted_count += 1
-        
-        if extracted_count > 0:
-            print(f"[AE] Added {extracted_count} extracted layer(s)")
-
-        final_animation = {"project": project_data, "layers": layers}
-        print(f"[AE] Final animation: {len(layers)} total layers")
-        
-        # Send WebSocket update to frontend for quick preview (standalone execution)
-        if unique_id and layers:
-            try:
-                from server import PromptServer
-                PromptServer.instance.send_sync("ae_animation_update", {
-                    "node_id": str(unique_id),
-                    "animation": final_animation
-                })
-            except Exception as e:
-                print(f"[AE] WebSocket error: {e}")
-
-        result_json = json.dumps(final_animation)
-
-        preview_enabled = cls._to_bool(ui_preview_only)
-
-        outputs: List[Any] = [result_json]
-        if preview_enabled:
-            outputs.append(result_json)
-        else:
-            outputs.append(None)
-
-        return io.NodeOutput(*outputs)
-
-    @staticmethod
-    def _to_bool(value: Any) -> bool:
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        if isinstance(value, (int, float)):
-            return bool(value)
-        return bool(value)
-
-
-class AERender(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="AERender",
-            display_name="AE Render",
-            category="AE Animation",
-            inputs=[
-                io.String.Input("animation", multiline=True),
                 io.Int.Input("start_frame", default=0, min=0),
                 io.Int.Input("end_frame", default=-1, min=-1),
             ],
@@ -281,45 +67,23 @@ class AERender(io.ComfyNode):
                 io.Mask.Output("mask_frames"),
             ],
         )
+        schema.output_node = True
+        return schema
 
-    @classmethod
-    def _get_value(cls, keyframes: Dict[str, Any], prop: str, time: float, default: float) -> float:
-        """Get interpolated value from keyframes at specific time.
-        
-        Args:
-            keyframes: Dictionary containing keyframe data
-            prop: Property name to look up
-            time: Time to interpolate at
-            default: Default value if property not found or invalid
-            
-        Returns:
-            Interpolated value at the given time
-        """
+    # ---- helper methods (from previous AERender) ---- #
+    @staticmethod
+    def _get_value(keyframes: Dict[str, Any], prop: str, time: float, default: float) -> float:
         if prop not in keyframes:
             return default
-            
         frames_data = keyframes[prop]
         if not isinstance(frames_data, list):
-            logging.warning(f"Invalid keyframe data type for property '{prop}': expected list, got {type(frames_data).__name__}")
             return default
-            
-        # Filter and validate frames with both 'time' and 'value'
         frames = []
-        invalid_count = 0
         for frame in frames_data:
-            if isinstance(frame, dict) and 'time' in frame and 'value' in frame:
+            if isinstance(frame, dict) and "time" in frame and "value" in frame:
                 frames.append(frame)
-            else:
-                invalid_count += 1
-                
-        if invalid_count > 0:
-            logging.warning(f"Skipped {invalid_count} invalid frame(s) in property '{prop}' (missing 'time' or 'value')")
-                
         if not frames:
-            logging.warning(f"No valid frames found for property '{prop}', using default value {default}")
             return default
-            
-        # Sort frames by time
         frames.sort(key=lambda k: k["time"])
         if time <= frames[0]["time"]:
             return frames[0]["value"]
@@ -333,45 +97,31 @@ class AERender(io.ComfyNode):
                 return k1["value"] + (k2["value"] - k1["value"]) * t
         return default
 
-    @classmethod
-    def _calculate_bezier_pos(cls, path_points: List[Dict[str, float]], time: float, duration: float) -> Optional[tuple[float, float]]:
+    @staticmethod
+    def _calculate_bezier_pos(path_points: List[Dict[str, float]], time: float, duration: float) -> Optional[tuple[float, float]]:
         if not path_points or len(path_points) < 2:
             return None
-        
-        # Normalize time to 0-1
-        t = max(0.0, min(1.0, time / duration)) if duration > 0 else 0
-        
+        t_norm = max(0.0, min(1.0, time / duration)) if duration > 0 else 0
         total_segments = len(path_points) - 1
-        current_segment = min(int(t * total_segments), total_segments - 1)
-        segment_t = (t * total_segments) - current_segment
-        
+        current_segment = min(int(t_norm * total_segments), total_segments - 1)
+        segment_t = (t_norm * total_segments) - current_segment
+
         p0 = path_points[current_segment]
         p1 = path_points[current_segment + 1]
-        
-        # Calculate control points (default to 1/3 and 2/3 if not present)
-        # Note: frontend stores cp relative to p0/p1? No, absolute coords usually?
-        # Frontend CanvasPreview.vue:
-        # const cp1x = p0.cp2x ?? (p0.x + (p1.x - p0.x) / 3)
-        # It seems frontend stores them as absolute coords relative to center
-        
         p0_x, p0_y = p0.get("x", 0), p0.get("y", 0)
         p1_x, p1_y = p1.get("x", 0), p1.get("y", 0)
-        
         cp1_x = p0.get("cp2x", p0_x + (p1_x - p0_x) / 3.0)
         cp1_y = p0.get("cp2y", p0_y + (p1_y - p0_y) / 3.0)
         cp2_x = p1.get("cp1x", p0_x + (p1_x - p0_x) * 2.0 / 3.0)
         cp2_y = p1.get("cp1y", p0_y + (p1_y - p0_y) * 2.0 / 3.0)
-        
-        # Cubic Bezier interpolation
+
         mt = 1 - segment_t
         mt2 = mt * mt
         mt3 = mt2 * mt
         t2 = segment_t * segment_t
         t3 = t2 * segment_t
-        
         x = mt3 * p0_x + 3 * mt2 * segment_t * cp1_x + 3 * mt * t2 * cp2_x + t3 * p1_x
         y = mt3 * p0_y + 3 * mt2 * segment_t * cp1_y + 3 * mt * t2 * cp2_y + t3 * p1_y
-        
         return x, y
 
     @classmethod
@@ -391,82 +141,48 @@ class AERender(io.ComfyNode):
                     "bg_mode": layer.get("bg_mode", "fit"),
                     "customMask": layer.get("customMask"),
                     "bezierPath": layer.get("bezierPath"),
-                })
-            except Exception:  # pragma: no cover - defensive
-                continue
-        return decoded
-
-    @classmethod
-    def execute(cls, animation: str, start_frame: int, end_frame: int) -> io.NodeOutput:
-        import math
-        try:
-            config = json.loads(animation)
-        except json.JSONDecodeError:
-            zeros = torch.zeros((1, 64, 64, 3))
-            mask = torch.zeros((1, 64, 64))
-            return io.NodeOutput(zeros, mask)
-
-        project = config.get("project", {})
-        layers_data = config.get("layers", [])
-        width = project.get("width", 512)
-        height = project.get("height", 512)
-        fps = project.get("fps", 30)
-        total_frames = project.get("total_frames", max(1, int(project.get("duration", 1) * fps)))
-        duration = project.get("duration", total_frames / max(fps, 1))
-        mask_expansion = project.get("mask_expansion", 0)
-        mask_feather = project.get("mask_feather", 0)
-        
-        num_layers = len(layers_data)
-        print(f"[AE] Render: {width}x{height}, {start_frame}-{end_frame}/{total_frames}, {num_layers} layers")
-        
-        # Print layer info for debugging
-        for i, layer_info in enumerate(layers_data):
-            layer_id = layer_info.get("id", f"unknown_{i}")
-            layer_name = layer_info.get("name", "Unnamed")
-            layer_type = layer_info.get("type", "unknown")
-            print(f"[AE]   Layer {i}: {layer_id} ({layer_name}) - {layer_type}")
-
-        # Decode layers with all metadata
-        layers = []
-        for layer in layers_data:
-            try:
-                img_b64 = layer['image_data'].split(',')[1]
-                img_data = base64.b64decode(img_b64)
-                img = Image.open(python_io.BytesIO(img_data)).convert("RGBA")
-                
-                layer_type = "background" if layer.get("type") == "background" else "foreground"
-                bg_mode = layer.get("bg_mode", "fit")
-                custom_mask = layer.get("customMask")
-                bezier_path = layer.get("bezierPath")
-                
-                # Debug info
-                print(f"[AE] Decoding layer: {layer.get('id')}, Type: {layer_type}")
-                if custom_mask:
-                    print(f"[AE]   - Has Custom Mask (len={len(custom_mask)})")
-                if bezier_path:
-                    print(f"[AE]   - Has Bezier Path (points={len(bezier_path)})")
-                
-                layers.append({
-                    "data": np.array(img),
-                    "keyframes": layer.get("keyframes", {}),
-                    "type": layer_type,
-                    "orig_w": img.width,
-                    "orig_h": img.height,
-                    "bg_mode": bg_mode,
-                    "customMask": custom_mask,
-                    "bezierPath": bezier_path,
                     "x": layer.get("x", 0),
                     "y": layer.get("y", 0),
                     "scale": layer.get("scale", 1.0),
                     "rotation": layer.get("rotation", 0),
                     "opacity": layer.get("opacity", 1.0),
                 })
-            except Exception as e:
-                print(f"[AE] Layer decode error: {e}")
+            except Exception:  # pragma: no cover
                 continue
+        return decoded
+
+    # ---- main execution ---- #
+    @classmethod
+    def execute(
+        cls,
+        width: int,
+        height: int,
+        fps: int,
+        total_frames: int,
+        mask_expansion: int,
+        mask_feather: int,
+        layers_keyframes: str,
+        start_frame: int = 0,
+        end_frame: int = -1,
+    ) -> io.NodeOutput:
+        layers_data = _parse_layers(layers_keyframes)
+
+        project = {
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "duration": total_frames / max(fps, 1),
+            "total_frames": total_frames,
+            "mask_expansion": mask_expansion,
+            "mask_feather": mask_feather,
+        }
 
         if end_frame == -1 or end_frame > total_frames:
             end_frame = total_frames
+
+        layers = cls._decode_layers(layers_data)
+        num_layers = len(layers)
+        print(f"[AE] Render (single node): {width}x{height}, {start_frame}-{end_frame}/{total_frames}, {num_layers} layers")
 
         frames: List[torch.Tensor] = []
         masks: List[torch.Tensor] = []
@@ -481,14 +197,13 @@ class AERender(io.ComfyNode):
                 kf = layer.get("keyframes", {})
                 is_foreground = layer.get("type") == "foreground"
 
-                # Use layer's static values as defaults, then override with keyframes
                 x = cls._get_value(kf, "x", time, layer.get("x", 0))
                 y = cls._get_value(kf, "y", time, layer.get("y", 0))
-                
-                # Apply Bezier Path animation if available (overrides x/y)
+
+                # Bezier overrides x/y
                 bezier_path = layer.get("bezierPath")
                 if bezier_path and len(bezier_path) >= 2:
-                    path_pos = cls._calculate_bezier_pos(bezier_path, time, duration)
+                    path_pos = cls._calculate_bezier_pos(bezier_path, time, project["duration"])
                     if path_pos:
                         x, y = path_pos
 
@@ -497,41 +212,26 @@ class AERender(io.ComfyNode):
                 opacity = cls._get_value(kf, "opacity", time, layer.get("opacity", 1.0))
                 bg_mode = layer.get("bg_mode", "fit")
 
-                # Apply custom mask to foreground alpha FIRST (in original image coordinates)
+                # Apply custom mask on alpha (foreground only)
                 if is_foreground and layer.get("customMask"):
                     try:
-                        custom_mask_b64 = layer["customMask"].split(',')[1]
+                        custom_mask_b64 = layer["customMask"].split(",")[1]
                         custom_mask_data = base64.b64decode(custom_mask_b64)
-                        # FIX: Use RGBA and extract Alpha channel, because frontend mask uses Alpha for transparency
                         custom_mask_img = Image.open(python_io.BytesIO(custom_mask_data)).convert("RGBA")
                         custom_mask_np = np.array(custom_mask_img)
-                        
-                        # Resize mask to original image size
                         orig_h, orig_w = img_np.shape[:2]
-                        target_h, target_w = custom_mask_np.shape[:2]
-                        
-                        if (target_h, target_w) != (orig_h, orig_w):
+                        if custom_mask_np.shape[:2] != (orig_h, orig_w):
                             custom_mask_np = cv2.resize(custom_mask_np, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
-                        
-                        # Extract Alpha channel (3) as the mask
-                        # 255 = visible, 0 = hidden
                         mask_alpha = custom_mask_np[:, :, 3].astype(np.float32) / 255.0
-                        
-                        # Apply mask directly to alpha channel (multiply)
                         if img_np.shape[2] == 4:
                             img_np[:, :, 3] = (img_np[:, :, 3].astype(np.float32) * mask_alpha).astype(np.uint8)
                         else:
-                            # If RGB, add Alpha channel
-                            h, w = img_np.shape[:2]
                             alpha_channel = (mask_alpha * 255).astype(np.uint8)
                             img_np = np.dstack((img_np, alpha_channel))
-
                     except Exception as e:
-                        print(f"[AERender] Custom mask error: {e}")
-                        # import traceback
-                        # traceback.print_exc()
+                        print(f"[AE] Custom mask error: {e}")
 
-                # Background scaling logic
+                # Scale
                 new_w, new_h = img_np.shape[1], img_np.shape[0]
                 if not is_foreground:
                     orig_w, orig_h = img_np.shape[1], img_np.shape[0]
@@ -539,9 +239,8 @@ class AERender(io.ComfyNode):
                         base_scale = min(width / orig_w, height / orig_h)
                     elif bg_mode == "fill":
                         base_scale = max(width / orig_w, height / orig_h)
-                    else:  # stretch
+                    else:
                         base_scale = 1.0
-                    
                     final_scale = base_scale * scale
                     if bg_mode == "stretch":
                         new_w = max(1, int(width * scale))
@@ -549,7 +248,6 @@ class AERender(io.ComfyNode):
                     else:
                         new_w = max(1, int(orig_w * final_scale))
                         new_h = max(1, int(orig_h * final_scale))
-                    pass  # Background scaled
                 else:
                     if scale != 1.0 and scale > 0:
                         new_w = max(1, int(img_np.shape[1] * scale))
@@ -557,7 +255,6 @@ class AERender(io.ComfyNode):
 
                 if new_w != img_np.shape[1] or new_h != img_np.shape[0]:
                     img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-                
                 current_w, current_h = img_np.shape[1], img_np.shape[0]
 
                 if abs(rotation) > 0.1:
@@ -567,15 +264,12 @@ class AERender(io.ComfyNode):
 
                 paste_x = int(width // 2 + x - current_w // 2)
                 paste_y = int(height // 2 + y - current_h // 2)
-                
-                # Generate mask from foreground alpha
+
                 if is_foreground:
                     if img_np.shape[2] == 4:
                         mask_layer_np = (img_np[:, :, 3].astype(np.float32) * opacity).astype(np.uint8)
                     else:
                         mask_layer_np = np.full((current_h, current_w), int(255 * opacity), dtype=np.uint8)
-                    
-                    # Composite mask to canvas
                     m_y_start = max(0, paste_y)
                     m_x_start = max(0, paste_x)
                     m_y_end = min(paste_y + current_h, height)
@@ -627,7 +321,7 @@ class AERender(io.ComfyNode):
 class AEAnimationExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> List[type[io.ComfyNode]]:
-        return [AEAnimationCore, AERender]
+        return [AEAnimation]
 
 
 async def comfy_entrypoint() -> AEAnimationExtension:

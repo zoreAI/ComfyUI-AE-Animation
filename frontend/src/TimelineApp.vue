@@ -14,6 +14,24 @@
         <span class="project-info">{{ store.project.width }}x{{ store.project.height }} @ {{ store.project.fps }} FPS</span>
       </div>
       <div class="header-right">
+        <div class="project-inputs">
+          <div class="project-field">
+            <span class="field-label">W</span>
+            <input type="number" min="16" max="8192" :value="store.project.width" @input="updateProjectField('width', $event)" />
+          </div>
+          <div class="project-field">
+            <span class="field-label">H</span>
+            <input type="number" min="16" max="8192" :value="store.project.height" @input="updateProjectField('height', $event)" />
+          </div>
+          <div class="project-field">
+            <span class="field-label">FPS</span>
+            <input type="number" min="1" max="240" :value="store.project.fps" @input="updateProjectField('fps', $event)" />
+          </div>
+          <div class="project-field">
+            <span class="field-label">Frames</span>
+            <input type="number" min="1" :value="store.project.total_frames" @input="updateProjectField('total_frames', $event)" />
+          </div>
+        </div>
         <button class="btn btn-primary" @click="addForeground">+ FG Layer</button>
         <button class="btn btn-secondary" @click="addBackground">+ BG Layer</button>
         <div class="header-divider"></div>
@@ -121,10 +139,19 @@
       <main class="ae-viewport">
         <div class="viewport-bar">
           <span class="duration-text">Duration: {{ formatTime(projectDuration) }}</span>
-          <span class="time-text">{{ formatTime(store.currentTime) }}</span>
+          <div class="viewport-actions">
+            <span class="time-text">{{ formatTime(store.currentTime) }}</span>
+            <div class="zoom-control">
+              <span class="prop-label">Zoom</span>
+              <input type="range" min="25" max="200" step="5" v-model.number="canvasZoom" />
+              <span class="prop-value">{{ canvasZoom }}%</span>
+            </div>
+          </div>
         </div>
         <div class="viewport-canvas">
-          <CanvasPreview ref="canvasPreviewRef" :fitMode="fitMode" />
+          <div class="canvas-zoom" :style="{ transform: `scale(${canvasScale})` }">
+            <CanvasPreview ref="canvasPreviewRef" :fitMode="fitMode" />
+          </div>
         </div>
       </main>
     </div>
@@ -135,6 +162,9 @@
           <button class="btn btn-small btn-ghost" @click="addKeyframe">+ Keyframe</button>
           <button class="btn btn-small btn-ghost" @click="deleteCurrentKeyframe">Del Key</button>
           <button class="btn btn-small btn-ghost" @click="clearAllKeyframes">Clear All</button>
+          <div class="controls-divider"></div>
+          <button class="nav-btn" @click="moveUp" :disabled="!store.currentLayer">Up</button>
+          <button class="nav-btn" @click="moveDown" :disabled="!store.currentLayer">Down</button>
         </div>
         <div class="controls-center">
           <span class="time-display">{{ formatTime(store.currentTime) }}</span>
@@ -145,10 +175,6 @@
             </button>
             <button class="pb-btn" @click="seekToEnd">>|</button>
           </div>
-        </div>
-        <div class="controls-right">
-          <button class="nav-btn" @click="moveUp" :disabled="!store.currentLayer">Up</button>
-          <button class="nav-btn" @click="moveDown" :disabled="!store.currentLayer">Down</button>
         </div>
       </div>
 
@@ -270,6 +296,18 @@ function toNumber(value: any, fallback: number) {
 }
 
 const fitMode = ref<'fit' | 'fill' | 'stretch'>('fit')
+const canvasZoom = ref(100)
+const canvasScale = computed(() => Math.max(0.1, canvasZoom.value / 100))
+
+function handleGlobalKey(e: KeyboardEvent) {
+  if (e.code === 'Space') {
+    const tag = (e.target as HTMLElement)?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    e.preventDefault()
+    e.stopPropagation()
+    store.togglePlayback()
+  }
+}
 
 const projectDuration = computed(() => {
   const fps = Math.max(1, store.project.fps || 1)
@@ -325,6 +363,7 @@ onMounted(() => {
   } else {
     window.addEventListener('resize', syncTimelineWidth)
   }
+  window.addEventListener('keydown', handleGlobalKey, { capture: true })
 })
 
 let isDraggingKeyframe = false
@@ -695,6 +734,20 @@ function updateWidget(name: string, value: any) {
   if (w.callback) w.callback(value)
 }
 
+function updateProjectField(field: 'width' | 'height' | 'fps' | 'total_frames', event: Event) {
+  const raw = parseInt((event.target as HTMLInputElement).value, 10)
+  if (Number.isNaN(raw)) return
+  let value = raw
+  if (field === 'fps') value = Math.max(1, value)
+  if (field === 'total_frames') value = Math.max(1, value)
+  if (field === 'width' || field === 'height') value = Math.max(16, value)
+
+  store.setProject({ [field]: value } as any)
+  updateWidget(field, value)
+  // Clamp current time after project change
+  store.setCurrentTime(store.currentTime)
+}
+
 function save() {
   if (!props.node?.widgets) {
     console.error('[AE Timeline] Node or widgets not found!')
@@ -928,6 +981,7 @@ onBeforeUnmount(() => {
     resizeObserver = null
   }
   window.removeEventListener('resize', syncTimelineWidth)
+  window.removeEventListener('keydown', handleGlobalKey, { capture: true })
   save()
 })
 </script>
@@ -975,6 +1029,39 @@ onBeforeUnmount(() => {
   display: flex !important;
   align-items: center !important;
   gap: 8px !important;
+}
+
+.project-inputs {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  background: #2c2c2e !important;
+  padding: 4px 8px !important;
+  border-radius: 8px !important;
+  border: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+.project-field {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+
+.project-field input {
+  width: 64px !important;
+  padding: 4px 6px !important;
+  background: #000 !important;
+  border: 1px solid #38383a !important;
+  border-radius: 6px !important;
+  color: #0a84ff !important;
+  font-size: 11px !important;
+  font-family: "SF Mono", Monaco, monospace !important;
+}
+
+.field-label {
+  font-size: 11px !important;
+  color: #8e8e93 !important;
+  min-width: 20px !important;
 }
 
 .logo {
@@ -1294,11 +1381,28 @@ onBeforeUnmount(() => {
   color: #636366 !important;
 }
 
+.viewport-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+}
+
 .time-text {
   font-size: 14px !important;
   font-weight: 600 !important;
   font-family: "SF Mono", Monaco, monospace !important;
   color: #0a84ff !important;
+}
+
+.zoom-control {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.zoom-control input[type="range"] {
+  width: 120px !important;
+  accent-color: #0a84ff !important;
 }
 
 .viewport-canvas {
@@ -1309,6 +1413,20 @@ onBeforeUnmount(() => {
   align-items: center !important;
   justify-content: center !important;
   background-color: #1c1c1e !important; /* solid dark surface */
+}
+
+.canvas-zoom {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transform-origin: center center !important;
+}
+
+.viewport-canvas canvas {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  height: auto !important;
 }
 
 /* ========== Timeline (Footer) ========== */
@@ -1344,7 +1462,21 @@ onBeforeUnmount(() => {
 }
 
 .controls-left {
-  min-width: 220px !important;
+  min-width: 260px !important;
+  gap: 6px !important;
+  flex-shrink: 0 !important;
+}
+
+.controls-center {
+  flex: 1 !important;
+  justify-content: center !important;
+}
+
+.controls-divider {
+  width: 1px !important;
+  height: 18px !important;
+  background: #48484a !important;
+  margin: 0 4px !important;
 }
 
 .time-display {
