@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-ae-animation"
 description = "ComfyUI After Effects style animation timeline node with keyframe editing, layer management, mask tools, and background extraction."
-version = "1.1.0"
+version = "2.0.0"
 # Updated for GitHub Actions workflow trigger
 license = {file = "LICENSE"} 
 # classifiers = [
