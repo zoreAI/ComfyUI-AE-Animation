@@ -1,27 +1,28 @@
 <template>
   <div class="canvas-preview" ref="containerRef">
     <div class="canvas-wrapper">
-      <!-- WebGPU Canvas (hidden when not using GPU) -->
+      <!-- GPU 渲染 Canvas -->
       <canvas 
-        v-show="useGPU"
         ref="gpuCanvasRef"
+        v-show="gpuEnabled && gpuAvailable"
         :width="store.project.width"
         :height="store.project.height"
-        @mousedown="onMouseDown"
-        @mousemove="onMouseMove"
-        @mouseup="onMouseUp"
-        @mouseleave="onMouseUp"
-        @wheel.prevent="onWheel"
-        @contextmenu.prevent
-        tabindex="0"
-        @keydown="onKeyDown"
+        class="render-canvas"
       />
-      <!-- Canvas 2D Fallback -->
+      <!-- Canvas 2D 渲染 -->
       <canvas 
-        v-show="!useGPU"
         ref="canvasRef"
+        v-show="!gpuEnabled || !gpuAvailable"
         :width="store.project.width"
         :height="store.project.height"
+        class="render-canvas"
+      />
+      <!-- 交互层 Canvas (始终在最上层，用于鼠标事件和交互绘制) -->
+      <canvas 
+        ref="interactionCanvasRef"
+        :width="store.project.width"
+        :height="store.project.height"
+        class="interaction-canvas"
         @mousedown="onMouseDown"
         @mousemove="onMouseMove"
         @mouseup="onMouseUp"
@@ -33,10 +34,18 @@
       />
       <div class="canvas-info">
         <span v-if="store.currentLayer">
-          <span class="gpu-badge" v-if="useGPU">GPU</span>
           Layer {{ store.currentLayerIndex + 1 }} | X:{{ Math.round(store.currentLayer.x || 0) }} Y:{{ Math.round(store.currentLayer.y || 0) }} S:{{ (store.currentLayer.scale || 1).toFixed(2) }} R:{{ Math.round(store.currentLayer.rotation || 0) }}°
         </span>
         <span v-else>No layer selected</span>
+        <button 
+          v-if="gpuAvailable" 
+          class="gpu-toggle" 
+          :class="{ active: gpuEnabled }"
+          @click="toggleGPU"
+          :title="gpuEnabled ? '关闭GPU加速' : '开启GPU加速'"
+        >
+          GPU {{ gpuEnabled ? 'ON' : 'OFF' }}
+        </button>
       </div>
     </div>
   </div>
@@ -50,6 +59,8 @@ import TGPU from 'typegpu'
 const store = useTimelineStore()
 const canvasRef = ref<HTMLCanvasElement>()
 const gpuCanvasRef = ref<HTMLCanvasElement>()
+const interactionCanvasRef = ref<HTMLCanvasElement>()
+let interactionCtx: CanvasRenderingContext2D | null = null
 const containerRef = ref<HTMLDivElement>()
 
 let isDragging = false
@@ -60,7 +71,9 @@ let dragStartLayerY = 0
 let shiftKey = false
 let altKey = false
 
-const useGPU = ref(false)
+const useGPU = ref(false) // 当前是否使用 GPU 渲染
+const gpuAvailable = ref(false) // GPU 是否可用
+const gpuEnabled = ref(false) // 用户是否启用 GPU（默认关闭，需要手动开启）
 let gpuDevice: GPUDevice | null = null
 let gpuContext: GPUCanvasContext | null = null
 let gpuFormat: GPUTextureFormat = 'bgra8unorm'
@@ -68,7 +81,6 @@ let gpuFormat: GPUTextureFormat = 'bgra8unorm'
 let renderPending = false
 let ctx: CanvasRenderingContext2D | null = null
 const imageCache = new Map<string, HTMLImageElement>()
-const gpuTextureCache = new Map<string, GPUTexture>()
 let gpuSampler: GPUSampler | null = null
 let gpuPipeline: GPURenderPipeline | null = null
 let gpuUniformBuffer: GPUBuffer | null = null
@@ -112,6 +124,11 @@ onMounted(async () => {
       desynchronized: true
     })
   }
+  if (interactionCanvasRef.value) {
+    interactionCtx = interactionCanvasRef.value.getContext('2d', {
+      alpha: true
+    })
+  }
   await initWebGPU()
   scheduleRender()
 })
@@ -123,9 +140,76 @@ onUnmounted(() => {
 
 
 async function initWebGPU() {
-  console.log('[Timeline GPU] GPU rendering disabled, using Canvas 2D for stability')
-  useGPU.value = false
-  return
+  try {
+    if (!navigator.gpu) {
+      console.log('[Timeline GPU] WebGPU not supported, using Canvas 2D')
+      useGPU.value = false
+      return
+    }
+
+    const adapter = await navigator.gpu.requestAdapter()
+    if (!adapter) {
+      console.log('[Timeline GPU] No GPU adapter found, using Canvas 2D')
+      useGPU.value = false
+      return
+    }
+
+    gpuDevice = await adapter.requestDevice()
+    if (!gpuDevice || !gpuCanvasRef.value) {
+      console.log('[Timeline GPU] Failed to get GPU device, using Canvas 2D')
+      useGPU.value = false
+      return
+    }
+
+    gpuContext = gpuCanvasRef.value.getContext('webgpu')
+    if (!gpuContext) {
+      console.log('[Timeline GPU] Failed to get WebGPU context, using Canvas 2D')
+      useGPU.value = false
+      return
+    }
+
+    gpuFormat = navigator.gpu.getPreferredCanvasFormat()
+    gpuContext.configure({
+      device: gpuDevice,
+      format: gpuFormat,
+      alphaMode: 'premultiplied'
+    })
+
+    // Create sampler
+    gpuSampler = gpuDevice.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear'
+    })
+
+    // Create uniform buffer
+    gpuUniformBuffer = gpuDevice.createBuffer({
+      size: 80, // 64 bytes for mat4 + 4 bytes for opacity + padding
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    })
+
+    // Create bind group layout
+    gpuBindGroupLayout = gpuDevice.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }
+      ]
+    })
+
+    gpuPipeline = createGPUPipeline()
+    if (!gpuPipeline) {
+      console.log('[Timeline GPU] Failed to create pipeline, using Canvas 2D')
+      useGPU.value = false
+      return
+    }
+
+    gpuAvailable.value = true
+    useGPU.value = gpuEnabled.value // 只有用户启用时才使用 GPU
+    console.log('[Timeline GPU] WebGPU initialized successfully, enabled:', gpuEnabled.value)
+  } catch (e) {
+    console.warn('[Timeline GPU] WebGPU init failed:', e)
+    useGPU.value = false
+  }
 }
 
 function createGPUPipeline(): GPURenderPipeline | null {
@@ -176,23 +260,28 @@ function createGPUPipeline(): GPURenderPipeline | null {
 }
 
 function destroyGPU() {
-  for (const tex of gpuTextureCache.values()) tex.destroy()
-  gpuTextureCache.clear()
   gpuUniformBuffer?.destroy()
   gpuDevice = null
   gpuContext = null
+  offscreenCanvas = null
+  offscreenCtx = null
 }
 
 function scheduleRender() {
   if (renderPending) return
   renderPending = true
-  requestAnimationFrame(() => {
+  requestAnimationFrame(async () => {
     renderPending = false
-    render()
+    await render()
   })
 }
 
 watch(() => [store.layers, store.currentLayer, store.currentTime], () => {
+  scheduleRender()
+}, { deep: true })
+
+// 监听项目设置变化（摄像机、pano等）
+watch(() => store.project, () => {
   scheduleRender()
 }, { deep: true })
 
@@ -201,32 +290,61 @@ watch(() => store.extractMode.enabled, () => {
   scheduleRender()
 })
 
-function renderGPU() {
+// 监听 mask/path 模式变化
+watch(() => [store.maskMode.enabled, store.pathMode.enabled], () => {
+  scheduleRender()
+})
+
+let offscreenCanvas: HTMLCanvasElement | null = null
+let offscreenCtx: CanvasRenderingContext2D | null = null
+
+function getOffscreenCanvas(): { canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D } | null {
+  const w = store.project.width
+  const h = store.project.height
+  
+  if (!offscreenCanvas || offscreenCanvas.width !== w || offscreenCanvas.height !== h) {
+    offscreenCanvas = document.createElement('canvas')
+    offscreenCanvas.width = w
+    offscreenCanvas.height = h
+    offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false })
+  }
+  
+  if (!offscreenCtx) return null
+  return { canvas: offscreenCanvas, ctx: offscreenCtx }
+}
+
+async function renderGPU() {
   if (!gpuDevice || !gpuContext || !gpuPipeline || !gpuSampler || !gpuUniformBuffer || !gpuBindGroupLayout) {
     renderCanvas2D()
     return
   }
 
+  const offscreen = getOffscreenCanvas()
+  if (!offscreen) {
+    renderCanvas2D()
+    return
+  }
+
+  renderToContext(offscreen.ctx)
+  
   try {
+    const imageBitmap = await createImageBitmap(offscreen.canvas)
+    
+    const frameTexture = gpuDevice.createTexture({
+      size: [store.project.width, store.project.height],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+    })
+
+    gpuDevice.queue.copyExternalImageToTexture(
+      { source: imageBitmap },
+      { texture: frameTexture },
+      [store.project.width, store.project.height]
+    )
+
     const encoder = gpuDevice.createCommandEncoder()
     const textureView = gpuContext.getCurrentTexture().createView()
 
-    const renderableLayers: Array<{layer: any, texture: GPUTexture, props: any}> = []
-    
-    for (const layer of store.layers) {
-      if (!layer.image_data && !layer.img) continue
-      
-      const texture = gpuTextureCache.get(layer.id)
-      if (texture && layer.img) {
-        renderableLayers.push({
-          layer,
-          texture,
-          props: getLayerProps(layer)
-        })
-      } else {
-        loadGPUTexture(layer)
-      }
-    }
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: textureView,
@@ -238,64 +356,64 @@ function renderGPU() {
 
     pass.setPipeline(gpuPipeline)
 
-    for (const { layer, texture, props } of renderableLayers) {
-      const matrix = createTransformMatrix(props, layer.img.width, layer.img.height)
-      
-      const uniformData = new Float32Array(20)
-      uniformData.set(matrix)
-      uniformData[16] = props.opacity
-      gpuDevice.queue.writeBuffer(gpuUniformBuffer, 0, uniformData)
+    const identityMatrix = new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1
+    ])
+    const uniformData = new Float32Array(20)
+    uniformData.set(identityMatrix)
+    uniformData[16] = 1.0
+    gpuDevice.queue.writeBuffer(gpuUniformBuffer, 0, uniformData)
 
-      const bindGroup = gpuDevice.createBindGroup({
-        layout: gpuBindGroupLayout!,
-        entries: [
-          { binding: 0, resource: { buffer: gpuUniformBuffer } },
-          { binding: 1, resource: gpuSampler },
-          { binding: 2, resource: texture.createView() }
-        ]
-      })
+    const bindGroup = gpuDevice.createBindGroup({
+      layout: gpuBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: gpuUniformBuffer } },
+        { binding: 1, resource: gpuSampler },
+        { binding: 2, resource: frameTexture.createView() }
+      ]
+    })
 
-      pass.setBindGroup(0, bindGroup)
-      pass.draw(6)
-    }
-
+    pass.setBindGroup(0, bindGroup)
+    pass.draw(6)
     pass.end()
     gpuDevice.queue.submit([encoder.finish()])
+    frameTexture.destroy()
   } catch (e) {
     console.warn('[Timeline GPU] Render error:', e)
-    useGPU.value = false
     renderCanvas2D()
   }
 }
 
-async function loadGPUTexture(layer: any) {
-  if (!gpuDevice || gpuTextureCache.has(layer.id)) return
-  
-  try {
-    const img = layer.img || await loadImage(layer.image_data)
-    if (!img || !gpuDevice) return
-    
-    layer.img = img
-    
-    const texture = gpuDevice.createTexture({
-      size: [img.width, img.height],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
-    })
+function renderToContext(targetCtx: CanvasRenderingContext2D) {
+  targetCtx.fillStyle = '#000'
+  targetCtx.fillRect(0, 0, store.project.width, store.project.height)
 
-    const imageBitmap = await createImageBitmap(img)
-    gpuDevice.queue.copyExternalImageToTexture(
-      { source: imageBitmap },
-      { texture },
-      [img.width, img.height]
-    )
+  const panoEnabled = !!store.project.pano_enable
+  const cameraEnabled = !!store.project.cam_enable
+  const baseCamOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
+  const baseCamOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+  const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)
+  const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)
+  const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)
 
-    gpuTextureCache.set(layer.id, texture)
-    scheduleRender()
-  } catch (e) {
-    console.warn('[Timeline GPU] Texture load error:', e)
+  const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
+  const camOffsetX = cameraEnabled ? baseCamOffsetX + camPosX : baseCamOffsetX
+  const camOffsetY = cameraEnabled ? baseCamOffsetY + camPosY : baseCamOffsetY
+
+  const bgLayer = store.layers.find(l => l.type === 'background')
+  if (bgLayer) {
+    drawBackgroundLayer(targetCtx, bgLayer, camOffsetX, camOffsetY, cameraScale, cameraEnabled)
   }
+
+  store.layers.filter(l => l.type !== 'background').forEach(layer => {
+    drawForegroundLayer(targetCtx, layer, camOffsetX, camOffsetY, cameraEnabled, cameraScale)
+  })
 }
+
+
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
@@ -306,24 +424,7 @@ function loadImage(src: string): Promise<HTMLImageElement | null> {
   })
 }
 
-function createTransformMatrix(props: any, imgW: number, imgH: number): Float32Array {
-  const canvasW = store.project.width
-  const canvasH = store.project.height
-  
-  const x = props.x / canvasW * 2
-  const y = -props.y / canvasH * 2
-  const scaleX = (imgW * props.scale) / canvasW
-  const scaleY = (imgH * props.scale) / canvasH
-  
-  const cos = Math.cos(props.rotation * Math.PI / 180)
-  const sin = Math.sin(props.rotation * Math.PI / 180)
-  return new Float32Array([
-    scaleX * cos, scaleX * sin, 0, 0,
-    -scaleY * sin, scaleY * cos, 0, 0,
-    0, 0, 1, 0,
-    x, y, 0, 1
-  ])
-}
+
 
 function getCachedImage(layer: any): HTMLImageElement | null {
   if (layer.img) return layer.img
@@ -430,12 +531,269 @@ function getLayerProps(layer: any) {
   }
 }
 
-function render() {
-  if (useGPU.value) {
-    renderGPU()
-    return
+async function render() {
+  const shouldUseGPU = gpuAvailable.value && gpuEnabled.value
+  useGPU.value = shouldUseGPU
+  
+  if (shouldUseGPU) {
+    await renderGPU()
+  } else {
+    renderCanvas2D()
   }
-  renderCanvas2D()
+  
+  renderInteractionLayer()
+}
+
+function renderInteractionLayer() {
+  if (!interactionCanvasRef.value || !interactionCtx) return
+  
+  const iCtx = interactionCtx
+  const w = store.project.width
+  const h = store.project.height
+  
+  iCtx.clearRect(0, 0, w, h)
+  
+  if (store.pathMode.enabled && store.currentLayer?.bezierPath) {
+    drawBezierPathOnCtx(iCtx, store.currentLayer.bezierPath)
+  }
+  
+  if (store.extractMode.enabled) {
+    drawExtractOverlayOnCtx(iCtx)
+  }
+  
+  if (store.maskMode.enabled && store.currentLayer?.maskCanvas) {
+    drawMaskOverlayOnCtx(iCtx)
+  }
+  
+  if (store.currentLayer && store.currentLayer.img) {
+    drawSelectionBorder(iCtx)
+  }
+}
+
+function drawMaskOverlayOnCtx(iCtx: CanvasRenderingContext2D) {
+  const layer = store.currentLayer
+  if (!layer || !layer.maskCanvas || !layer.img) return
+  
+  const props = getLayerProps(layer)
+  const imgW = layer.img.width
+  const imgH = layer.img.height
+  const canvasW = store.project.width
+  const canvasH = store.project.height
+  const centerX = canvasW / 2
+  const centerY = canvasH / 2
+  
+  const cameraEnabled = !!store.project.cam_enable
+  const camPosX = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)) : 0
+  const camPosY = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)) : 0
+  const camPosZ = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)) : 0
+  const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
+  const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+  
+  const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
+  const layerZ = props.z || 0
+  const depthMul = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+  const parallax = cameraEnabled ? depthMul : 1
+  const camMul = cameraEnabled ? cameraScale : 1
+  
+  const finalX = (props.x + (camOffsetX + camPosX) * parallax) * camMul
+  const finalY = (props.y + (camOffsetY + camPosY) * parallax) * camMul
+  const finalScale = props.scale * camMul * depthMul
+  
+  iCtx.save()
+  iCtx.globalAlpha = 0.5
+  iCtx.translate(centerX + finalX, centerY + finalY)
+  iCtx.rotate((props.rotation * Math.PI) / 180)
+  iCtx.scale(finalScale, finalScale)
+  
+  iCtx.fillStyle = 'rgba(255, 0, 0, 0.3)'
+  iCtx.fillRect(-imgW / 2, -imgH / 2, imgW, imgH)
+  
+  iCtx.globalCompositeOperation = 'destination-out'
+  iCtx.drawImage(layer.maskCanvas, -imgW / 2, -imgH / 2, imgW, imgH)
+  
+  iCtx.restore()
+}
+
+function drawSelectionBorder(iCtx: CanvasRenderingContext2D) {
+  const layer = store.currentLayer
+  if (!layer || !layer.img) return
+  
+  const props = getLayerProps(layer)
+  const imgW = layer.img.width
+  const imgH = layer.img.height
+  const canvasW = store.project.width
+  const canvasH = store.project.height
+  const centerX = canvasW / 2
+  const centerY = canvasH / 2
+  
+  const cameraEnabled = !!store.project.cam_enable
+  const baseCamOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
+  const baseCamOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+  const camPosX = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)) : 0
+  const camPosY = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)) : 0
+  const camPosZ = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)) : 0
+  const camYaw = cameraEnabled ? (store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)) : 0
+  const camPitch = cameraEnabled ? (store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)) : 0
+  
+  const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
+  const camOffsetX = cameraEnabled ? baseCamOffsetX + camPosX : baseCamOffsetX
+  const camOffsetY = cameraEnabled ? baseCamOffsetY + camPosY : baseCamOffsetY
+  
+  const layerZ = props.z || 0
+  const depthMul = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+  const parallax = cameraEnabled ? depthMul : 1
+  const camMul = cameraEnabled ? cameraScale : 1
+  
+  let layerX = props.x
+  let layerY = props.y
+  if (cameraEnabled && (camYaw !== 0 || camPitch !== 0)) {
+    const yawRad = camYaw * Math.PI / 180
+    const pitchRad = camPitch * Math.PI / 180
+    const zOffset = layer.type === 'background' ? (layerZ + 1000) * 0.3 : (layerZ + 500) * 0.5
+    layerX -= Math.tan(yawRad) * zOffset
+    layerY -= Math.tan(pitchRad) * zOffset
+  }
+  
+  let finalX = (layerX + camOffsetX * parallax) * camMul
+  let finalY = (layerY + camOffsetY * parallax) * camMul
+  let finalScale = props.scale * camMul * depthMul
+  
+  if (layer.type === 'background' && imgW > 0 && imgH > 0) {
+    const mode = layer.bg_mode || 'fit'
+    let baseScale = 1
+    if (mode === 'fit') baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+    else if (mode === 'fill') baseScale = Math.max(canvasW / imgW, canvasH / imgH)
+    else baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+    finalScale = props.scale * baseScale * camMul * depthMul
+  }
+  
+  if (!Number.isFinite(finalScale) || finalScale <= 0) finalScale = 1
+  
+  iCtx.save()
+  iCtx.translate(centerX + finalX, centerY + finalY)
+  iCtx.rotate((props.rotation * Math.PI) / 180)
+  iCtx.scale(finalScale, finalScale)
+  
+  iCtx.strokeStyle = '#3a7bc8'
+  iCtx.lineWidth = 2 / finalScale
+  iCtx.strokeRect(-imgW / 2, -imgH / 2, imgW, imgH)
+  
+  iCtx.fillStyle = '#3a7bc8'
+  const corners = [[-imgW/2, -imgH/2], [imgW/2, -imgH/2], [imgW/2, imgH/2], [-imgW/2, imgH/2]]
+  corners.forEach(([cx, cy]) => {
+    iCtx.fillRect(cx - 4/finalScale, cy - 4/finalScale, 8/finalScale, 8/finalScale)
+  })
+  
+  iCtx.restore()
+}
+
+// 在交互层绘制贝塞尔路径
+function drawBezierPathOnCtx(iCtx: CanvasRenderingContext2D, path: any[]) {
+  if (!path || path.length === 0) return
+  
+  const centerX = store.project.width / 2
+  const centerY = store.project.height / 2
+  
+  iCtx.save()
+  iCtx.strokeStyle = '#ff6b6b'
+  iCtx.lineWidth = 2
+  iCtx.setLineDash([5, 5])
+  
+  iCtx.beginPath()
+  iCtx.moveTo(centerX + path[0].x, centerY + path[0].y)
+  
+  for (let i = 1; i < path.length; i++) {
+    const p0 = path[i - 1]
+    const p1 = path[i]
+    
+    const cp1x = p0.cp2x ?? (p0.x + (p1.x - p0.x) / 3)
+    const cp1y = p0.cp2y ?? (p0.y + (p1.y - p0.y) / 3)
+    const cp2x = p1.cp1x ?? (p0.x + (p1.x - p0.x) * 2 / 3)
+    const cp2y = p1.cp1y ?? (p0.y + (p1.y - p0.y) * 2 / 3)
+    
+    iCtx.bezierCurveTo(
+      centerX + cp1x, centerY + cp1y,
+      centerX + cp2x, centerY + cp2y,
+      centerX + p1.x, centerY + p1.y
+    )
+  }
+  iCtx.stroke()
+  iCtx.setLineDash([])
+  
+  // 绘制路径点
+  path.forEach((pt, i) => {
+    iCtx.beginPath()
+    iCtx.arc(centerX + pt.x, centerY + pt.y, 6, 0, Math.PI * 2)
+    iCtx.fillStyle = i === 0 ? '#4ecdc4' : (i === path.length - 1 ? '#ff6b6b' : '#ffe66d')
+    iCtx.fill()
+    iCtx.strokeStyle = '#fff'
+    iCtx.lineWidth = 2
+    iCtx.stroke()
+  })
+  
+  iCtx.restore()
+}
+
+function drawExtractOverlayOnCtx(iCtx: CanvasRenderingContext2D) {
+  if (!store.extractMode.enabled || !extractMaskCanvas || !extractSourceLayerId) return
+  const bgLayer = store.layers.find(l => l.id === extractSourceLayerId)
+  if (!bgLayer) return
+  const img = getCachedImage(bgLayer)
+  if (!img) return
+
+  const props = getLayerProps(bgLayer)
+  const canvasW = store.project.width
+  const canvasH = store.project.height
+  const centerX = canvasW / 2
+  const centerY = canvasH / 2
+  const imgW = img.width
+  const imgH = img.height
+  
+  const cameraEnabled = !!store.project.cam_enable
+  const camPosX = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)) : 0
+  const camPosY = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)) : 0
+  const camPosZ = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)) : 0
+  const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
+  const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+  
+  const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
+  const layerZ = props.z || 0
+  const depthMul = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+  const parallax = cameraEnabled ? depthMul : 1
+  const camMul = cameraEnabled ? cameraScale : 1
+  
+  let baseScale = 1
+  if (imgW > 0 && imgH > 0) {
+    const mode = bgLayer.bg_mode || 'fit'
+    if (mode === 'fit') baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+    else if (mode === 'fill') baseScale = Math.max(canvasW / imgW, canvasH / imgH)
+    else baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+  }
+  
+  const finalX = ((props.x ?? 0) + (camOffsetX + camPosX) * parallax) * camMul
+  const finalY = ((props.y ?? 0) + (camOffsetY + camPosY) * parallax) * camMul
+  const finalScale = (props.scale ?? 1) * baseScale * camMul * depthMul
+  
+  iCtx.save()
+  iCtx.translate(centerX + finalX, centerY + finalY)
+  iCtx.rotate((props.rotation ?? 0) * Math.PI / 180)
+  iCtx.scale(finalScale, finalScale)
+  
+  iCtx.fillStyle = 'rgba(0, 0, 0, 0.65)'
+  iCtx.fillRect(-imgW / 2, -imgH / 2, imgW, imgH)
+
+  iCtx.globalCompositeOperation = 'destination-out'
+  iCtx.drawImage(extractMaskCanvas, -imgW / 2, -imgH / 2, imgW, imgH)
+
+  iCtx.restore()
+}
+
+// 切换 GPU 加速
+function toggleGPU() {
+  gpuEnabled.value = !gpuEnabled.value
+  useGPU.value = gpuAvailable.value && gpuEnabled.value
+  console.log('[Timeline GPU] Toggle - gpuAvailable:', gpuAvailable.value, 'gpuEnabled:', gpuEnabled.value, 'useGPU:', useGPU.value)
+  scheduleRender()
 }
 
 function createViewMatrix(yaw: number, pitch: number, roll: number, posX: number, posY: number, posZ: number): number[] {
@@ -524,10 +882,18 @@ function projectToScreen(point: { x: number, y: number, z: number, w: number }, 
 
 function renderCanvas2D() {
   if (!canvasRef.value || !ctx) return
+  renderToContext(ctx)
+  
+  if (store.pathMode.enabled && store.currentLayer?.bezierPath) {
+    drawBezierPath(ctx, store.currentLayer.bezierPath)
+  }
 
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, store.project.width, store.project.height)
+  if (store.extractMode.enabled) {
+    drawExtractOverlay(ctx)
+  }
+}
 
+function _unusedPanoEnabled() {
   const panoEnabled = !!store.project.pano_enable
   const cameraEnabled = !!store.project.cam_enable
   const baseCamOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
@@ -707,13 +1073,6 @@ function drawBackgroundLayer3D(
   ctx.scale(finalScale, finalScale)
 
   ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
-
-  if (layer === store.currentLayer) {
-    ctx.strokeStyle = '#3a7bc8'
-    ctx.lineWidth = 2 / finalScale
-    ctx.strokeRect(-imgW / 2 - 2, -imgH / 2 - 2, imgW + 4, imgH + 4)
-  }
-
   ctx.restore()
 }
 
@@ -810,13 +1169,6 @@ function drawForegroundLayer3D(
   } else {
     ctx.drawImage(img, 0, 0, w, h)
   }
-
-  if (layer === store.currentLayer) {
-    ctx.strokeStyle = '#3a7bc8'
-    ctx.lineWidth = 2 / finalScale
-    ctx.strokeRect(-2, -2, w + 4, h + 4)
-  }
-
   ctx.restore()
 }
 
@@ -1000,22 +1352,22 @@ function drawBackgroundLayer(ctx: CanvasRenderingContext2D, layer: any, camOffse
       bgY -= Math.tan(pitchRad) * (bgZ + 1000) * 0.3
     }
     
-    ctx.translate(
-      canvasW / 2 + (bgX + camX * parallax) * camMul,
-      canvasH / 2 + (bgY + camY * parallax) * camMul
-    )
-    ctx.rotate((props.rotation * Math.PI) / 180)
-    ctx.scale(props.scale * baseScale * camMul * depthMul, props.scale * baseScale * camMul * depthMul)
+    const translateX = canvasW / 2 + (bgX + camX * parallax) * camMul
+    const translateY = canvasH / 2 + (bgY + camY * parallax) * camMul
+    const finalScale = (props.scale || 1) * baseScale * camMul * depthMul
+    
+    // 确保值有效
+    if (!Number.isFinite(translateX) || !Number.isFinite(translateY) || !Number.isFinite(finalScale) || finalScale <= 0) {
+      ctx.restore()
+      return
+    }
+    
+    ctx.translate(translateX, translateY)
+    ctx.rotate(((props.rotation || 0) * Math.PI) / 180)
+    ctx.scale(finalScale, finalScale)
 
     ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
   }
-
-  if (!cameraActive && layer === store.currentLayer) {
-    ctx.strokeStyle = '#3a7bc8'
-    ctx.lineWidth = 2 / (props.scale * baseScale)
-    ctx.strokeRect(-imgW / 2 - 2, -imgH / 2 - 2, imgW + 4, imgH + 4)
-  }
-
   ctx.restore()
 }
 
@@ -1054,10 +1406,16 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any, camOffse
     layerY -= Math.tan(pitchRad) * (layerZ + 500) * 0.5
   }
   
-  ctx.translate(
-    store.project.width / 2 + (layerX + camX * parallax) * camMul,
-    store.project.height / 2 + (layerY + camY * parallax) * camMul
-  )
+  const translateX = store.project.width / 2 + (layerX + camX * parallax) * camMul
+  const translateY = store.project.height / 2 + (layerY + camY * parallax) * camMul
+  
+  // 确保值有效
+  if (!Number.isFinite(translateX) || !Number.isFinite(translateY)) {
+    ctx.restore()
+    return
+  }
+  
+  ctx.translate(translateX, translateY)
   
   // 图层自身的 3D 旋转
   if (props.rotationX !== 0 || props.rotationY !== 0) {
@@ -1112,20 +1470,6 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any, camOffse
     ctx.drawImage(img, -w / 2 - anchorOffsetX, -h / 2 - anchorOffsetY, w, h)
   }
 
-  if (layer === store.currentLayer && layer.img) {
-    ctx.strokeStyle = '#3a7bc8'
-    ctx.lineWidth = 2 / props.scale
-    const w = layer.img.width
-    const h = layer.img.height
-    ctx.strokeRect(-w / 2 - 2, -h / 2 - 2, w + 4, h + 4)
-    
-    ctx.fillStyle = '#3a7bc8'
-    const corners = [[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]]
-    corners.forEach(([cx, cy]) => {
-      ctx.fillRect(cx - 4/props.scale, cy - 4/props.scale, 8/props.scale, 8/props.scale)
-    })
-  }
-
   if (props.mask_size > 0) {
     ctx.strokeStyle = '#3ac88e'
     ctx.lineWidth = 2 / props.scale
@@ -1146,7 +1490,8 @@ function getActiveCanvas(): HTMLCanvasElement | null {
 }
 
 function getCanvasCoords(e: MouseEvent) {
-  const canvas = getActiveCanvas()
+  // 使用交互层 canvas 来计算坐标（因为鼠标事件在交互层上）
+  const canvas = interactionCanvasRef.value || getActiveCanvas()
   if (!canvas) return { x: 0, y: 0 }
   
   const rect = canvas.getBoundingClientRect()
@@ -1170,7 +1515,7 @@ let isPathEditing = false
 let selectedPathPoint = -1
 
 function onMouseDown(e: MouseEvent) {
-  getActiveCanvas()?.focus()
+  interactionCanvasRef.value?.focus()
   shiftKey = e.shiftKey
   altKey = e.altKey
   
@@ -1784,10 +2129,31 @@ defineExpose({
 
 .canvas-wrapper {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
+  display: inline-block;
+}
+
+.render-canvas {
+  display: block;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  outline: none;
+  will-change: contents;
+  image-rendering: -webkit-optimize-contrast;
+  box-sizing: border-box;
+}
+
+.interaction-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: move;
+  outline: none;
+  box-sizing: border-box;
+  z-index: 10;
+  background: transparent;
+}
+
+.interaction-canvas:focus {
+  outline: 2px solid #3a7bc8;
 }
 
 canvas {
@@ -1818,9 +2184,36 @@ canvas:focus {
   padding: 4px 12px;
   border-radius: 4px;
   white-space: nowrap;
-  z-index: 10;
-  pointer-events: none;
+  z-index: 20;
+  pointer-events: auto;
   text-align: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gpu-toggle {
+  background: #444;
+  color: #888;
+  font-size: 10px;
+  font-weight: bold;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid #555;
+  cursor: pointer;
+  transition: all 0.2s;
+  pointer-events: auto;
+}
+
+.gpu-toggle:hover {
+  background: #555;
+  color: #aaa;
+}
+
+.gpu-toggle.active {
+  background: linear-gradient(135deg, #00b894, #00cec9);
+  color: #fff;
+  border-color: #00b894;
 }
 
 .gpu-badge {
