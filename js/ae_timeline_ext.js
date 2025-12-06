@@ -99,6 +99,14 @@ async function openAETimelineForNode(node) {
     } catch {
       // ignore
     }
+    try {
+      // 自动保存一次节点，避免丢失
+      if (node && typeof node.save === "function") node.save();
+      const graph = getGraph();
+      if (graph?.setDirtyCanvas) graph.setDirtyCanvas(true, true);
+    } catch (e) {
+      console.warn("[AE Timeline] autosave on close failed", e);
+    }
     dialog.remove();
     if (aeTimelineDialog === dialog) {
       aeTimelineDialog = null;

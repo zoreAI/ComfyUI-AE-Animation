@@ -25,13 +25,21 @@ export interface Layer {
   // 2D 变换
   x: number
   y: number
+  z?: number
   scale: number
   rotation: number
   opacity: number
-  // 3D 变换
-  rotationX?: number  // X轴旋转
-  rotationY?: number  // Y轴旋转
-  rotationZ?: number  // Z轴旋转（等同于rotation）
+  // 3D 模式
+  is3D?: boolean      // 是否启用 3D 模式
+  // 3D 旋转
+  rotationX?: number  // X轴旋转 (pitch)
+  rotationY?: number  // Y轴旋转 (yaw)
+  rotationZ?: number  // Z轴旋转 (roll)
+  // 3D 缩放
+  scaleX?: number     // X轴缩放
+  scaleY?: number     // Y轴缩放
+  scaleZ?: number     // Z轴缩放
+  // 锚点
   anchorX?: number    // 锚点X
   anchorY?: number    // 锚点Y
   perspective?: number // 透视距离
@@ -56,6 +64,23 @@ export interface Project {
   total_frames: number
   mask_expansion: number
   mask_feather: number
+  hdr_enable: boolean
+  hdr_exposure: number
+  pano_enable: boolean
+  cam_enable?: boolean  // 3D 摄像机开关
+  cam_yaw: number
+  cam_pitch: number
+  cam_roll: number
+  cam_fov: number
+  cam_offset_x?: number
+  cam_offset_y?: number
+  cam_pos_x?: number
+  cam_pos_y?: number
+  cam_pos_z?: number
+}
+
+export interface ProjectKeyframes {
+  [prop: string]: Keyframe[]
 }
 
 function getSafeDuration(p: Project) {
@@ -72,8 +97,22 @@ export const useTimelineStore = defineStore('timeline', () => {
     duration: 5,
     total_frames: 150,
     mask_expansion: 0,
-    mask_feather: 0
+    mask_feather: 0,
+    hdr_enable: false,
+    hdr_exposure: 0,
+    pano_enable: false,
+    cam_enable: false,
+    cam_yaw: 0,
+    cam_pitch: 0,
+    cam_roll: 0,
+    cam_fov: 90,
+    cam_offset_x: 0,
+    cam_offset_y: 0,
+    cam_pos_x: 0,
+    cam_pos_y: 0,
+    cam_pos_z: 0
   })
+  const projectKeyframes = ref<ProjectKeyframes>({})
 
   // Layers
   const layers = ref<Layer[]>([])
@@ -144,9 +183,53 @@ export const useTimelineStore = defineStore('timeline', () => {
 
     Object.assign(project.value, next)
   }
+  function setProjectKeyframe(prop: string, time: number, value: number) {
+    if (!projectKeyframes.value[prop]) projectKeyframes.value[prop] = []
+    const arr = projectKeyframes.value[prop]
+    const existing = arr.find(k => Math.abs(k.time - time) < 1e-3)
+    if (existing) existing.value = value
+    else arr.push({ time, value })
+    arr.sort((a, b) => a.time - b.time)
+  }
+
+  function deleteProjectKeyframe(prop: string, time: number) {
+    const arr = projectKeyframes.value[prop]
+    if (!arr) return
+    projectKeyframes.value[prop] = arr.filter(k => Math.abs(k.time - time) > 1e-3)
+  }
+
+  function interpolateProjectValue(prop: string, time: number, fallback: number) {
+    const arr = projectKeyframes.value[prop]
+    if (!arr || arr.length === 0) return fallback
+    const sorted = [...arr].sort((a, b) => a.time - b.time)
+    if (time <= sorted[0].time) return sorted[0].value
+    if (time >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const k1 = sorted[i]
+      const k2 = sorted[i + 1]
+      if (time >= k1.time && time <= k2.time) {
+        const t = (time - k1.time) / Math.max(1e-6, k2.time - k1.time)
+        return k1.value + (k2.value - k1.value) * t
+      }
+    }
+    return fallback
+  }
 
   function addLayer(layer: Layer) {
-    layers.value.push(layer)
+    layers.value.push({
+      z: 0,
+      is3D: false,
+      rotationX: 0,
+      rotationY: 0,
+      rotationZ: 0,
+      scaleX: 1,
+      scaleY: 1,
+      scaleZ: 1,
+      anchorX: 0,
+      anchorY: 0,
+      perspective: 1000,
+      ...layer
+    })
     // 自动选中新添加的图层
     currentLayerIndex.value = layers.value.length - 1
   }
@@ -256,8 +339,22 @@ export const useTimelineStore = defineStore('timeline', () => {
       duration,
       total_frames: totalFrames,
       mask_expansion: proj.mask_expansion || 0,
-      mask_feather: proj.mask_feather || 0
+      mask_feather: proj.mask_feather || 0,
+      hdr_enable: !!proj.hdr_enable,
+      hdr_exposure: proj.hdr_exposure || 0,
+      pano_enable: !!proj.pano_enable,
+      cam_enable: proj.cam_enable !== undefined ? !!proj.cam_enable : !!proj.pano_enable,
+      cam_yaw: proj.cam_yaw || 0,
+      cam_pitch: proj.cam_pitch || 0,
+      cam_roll: proj.cam_roll || 0,
+      cam_fov: proj.cam_fov || 90,
+      cam_offset_x: proj.cam_offset_x || 0,
+      cam_offset_y: proj.cam_offset_y || 0,
+      cam_pos_x: proj.cam_pos_x || 0,
+      cam_pos_y: proj.cam_pos_y || 0,
+      cam_pos_z: proj.cam_pos_z || 0
     })
+    projectKeyframes.value = proj.project_keyframes || {}
 
     layers.value = (animation.layers || []).map((l: any) => ({
       id: l.id,
@@ -267,13 +364,21 @@ export const useTimelineStore = defineStore('timeline', () => {
       // 2D 变换
       x: l.x || 0,
       y: l.y || 0,
+      z: l.z || 0,
       scale: l.scale || 1,
       rotation: l.rotation || 0,
       opacity: l.opacity !== undefined ? l.opacity : 1,
-      // 3D 变换
+      // 3D 模式
+      is3D: l.is3D || false,
+      // 3D 旋转
       rotationX: l.rotationX || 0,
       rotationY: l.rotationY || 0,
       rotationZ: l.rotationZ || 0,
+      // 3D 缩放
+      scaleX: l.scaleX !== undefined ? l.scaleX : (l.scale || 1),
+      scaleY: l.scaleY !== undefined ? l.scaleY : (l.scale || 1),
+      scaleZ: l.scaleZ !== undefined ? l.scaleZ : 1,
+      // 锚点
       anchorX: l.anchorX || 0,
       anchorY: l.anchorY || 0,
       perspective: l.perspective || 1000,
@@ -295,8 +400,10 @@ export const useTimelineStore = defineStore('timeline', () => {
 
     // 包含 2D 和 3D 属性
     const props: (keyof Layer)[] = [
-      'x', 'y', 'scale', 'rotation', 'opacity', 'mask_size',
-      'rotationX', 'rotationY', 'rotationZ', 'anchorX', 'anchorY', 'perspective'
+      'x', 'y', 'z', 'scale', 'rotation', 'opacity', 'mask_size',
+      'rotationX', 'rotationY', 'rotationZ', 
+      'scaleX', 'scaleY', 'scaleZ',
+      'anchorX', 'anchorY', 'perspective'
     ]
     if (!layer.keyframes) layer.keyframes = {}
 
@@ -320,8 +427,10 @@ export const useTimelineStore = defineStore('timeline', () => {
     if (!layer || !layer.keyframes) return
 
     const props: (keyof Layer)[] = [
-      'x', 'y', 'scale', 'rotation', 'opacity', 'mask_size',
-      'rotationX', 'rotationY', 'rotationZ', 'anchorX', 'anchorY', 'perspective'
+      'x', 'y', 'z', 'scale', 'rotation', 'opacity', 'mask_size',
+      'rotationX', 'rotationY', 'rotationZ',
+      'scaleX', 'scaleY', 'scaleZ',
+      'anchorX', 'anchorY', 'perspective'
     ]
     for (const prop of props) {
       if (layer.keyframes[prop]) {
@@ -338,7 +447,7 @@ export const useTimelineStore = defineStore('timeline', () => {
 
   function exportAnimation() {
     return {
-      project: { ...project.value },
+      project: { ...project.value, project_keyframes: projectKeyframes.value },
       layers: layers.value.map(l => ({
         id: l.id,
         name: l.name,
@@ -347,13 +456,21 @@ export const useTimelineStore = defineStore('timeline', () => {
         // 2D 变换
         x: l.x,
         y: l.y,
+        z: l.z || 0,
         scale: l.scale,
         rotation: l.rotation,
         opacity: l.opacity,
-        // 3D 变换
+        // 3D 模式
+        is3D: l.is3D || false,
+        // 3D 旋转
         rotationX: l.rotationX,
         rotationY: l.rotationY,
         rotationZ: l.rotationZ,
+        // 3D 缩放
+        scaleX: l.scaleX,
+        scaleY: l.scaleY,
+        scaleZ: l.scaleZ,
+        // 锚点
         anchorX: l.anchorX,
         anchorY: l.anchorY,
         perspective: l.perspective,
@@ -381,6 +498,7 @@ export const useTimelineStore = defineStore('timeline', () => {
     maskMode,
     pathMode,
     extractMode,
+    projectKeyframes,
 
     // Computed
     currentLayer,
@@ -401,6 +519,9 @@ export const useTimelineStore = defineStore('timeline', () => {
     addKeyframe,
     deleteKeyframe,
     clearAllKeyframes,
+    setProjectKeyframe,
+    deleteProjectKeyframe,
+    interpolateProjectValue,
     loadAnimation,
     exportAnimation
   }

@@ -9,15 +9,27 @@
       </div>
       <!-- 图层列表 -->
       <div class="layers-list">
-        <div class="empty-msg" v-if="store.layers.length === 0">
+        <!-- 摄像机轨道 -->
+        <div 
+          v-if="store.project.cam_enable"
+          class="layer-row camera-row"
+          :class="{ active: selectedTrack === 'camera' }"
+          @click="selectCameraTrack"
+        >
+          <span class="layer-vis">🎥</span>
+          <span class="layer-icon">📷</span>
+          <span class="layer-name">摄像机</span>
+          <button class="kf-btn" @click.stop="addCameraKeyframe" title="添加关键帧">◆</button>
+        </div>
+        <div class="empty-msg" v-if="store.layers.length === 0 && !store.project.cam_enable">
           暂无图层
         </div>
         <div 
           v-for="(layer, index) in store.layers"
           :key="layer.id"
           class="layer-row"
-          :class="{ active: index === store.currentLayerIndex }"
-          @click="store.selectLayer(index)"
+          :class="{ active: index === store.currentLayerIndex && selectedTrack !== 'camera' }"
+          @click="selectLayerTrack(index)"
         >
           <span class="layer-vis">{{ layer.opacity > 0 ? '👁' : '◯' }}</span>
           <span class="layer-icon">{{ layer.type === 'background' ? '🖼' : '📄' }}</span>
@@ -48,11 +60,29 @@
 
       <!-- 轨道区 -->
       <div class="tracks-area">
+        <!-- 摄像机关键帧轨道 -->
+        <div 
+          v-if="store.project.cam_enable"
+          class="track-row camera-track"
+          :class="{ active: selectedTrack === 'camera' }"
+          @click.stop="onCameraTrackClick($event)"
+        >
+          <div
+            v-for="(kf, kfIdx) in projectKeyframesList"
+            :key="kfIdx"
+            class="keyframe camera-kf"
+            :class="{ current: Math.abs(kf.time - store.currentTime) < 0.02 }"
+            :style="{ left: `${(kf.time / store.project.duration) * 100}%` }"
+            :title="`${kf.prop}: ${kf.value.toFixed(2)}`"
+            @click.stop="selectCameraKeyframe(kf)"
+          ></div>
+        </div>
+        <!-- 图层轨道 -->
         <div 
           v-for="(layer, index) in store.layers"
           :key="layer.id"
           class="track-row"
-          :class="{ active: index === store.currentLayerIndex }"
+          :class="{ active: index === store.currentLayerIndex && selectedTrack !== 'camera' }"
           @click.stop="onTrackClick($event, index)"
         >
           <!-- 关键帧 -->
@@ -70,8 +100,47 @@
       </div>
     </div>
 
-    <!-- 底部属性区（选中图层时） -->
-    <div class="props-bar" v-if="store.currentLayer && store.currentLayer.type !== 'background'">
+    <!-- 底部属性区 -->
+    <!-- 摄像机属性 -->
+    <div class="props-bar camera-props" v-if="selectedTrack === 'camera' && store.project.cam_enable">
+      <div class="prop-group">
+        <span class="group-label">位置</span>
+        <div class="prop-item">
+          <label>X</label>
+          <input type="number" v-model.number="store.project.cam_pos_x" step="10" />
+        </div>
+        <div class="prop-item">
+          <label>Y</label>
+          <input type="number" v-model.number="store.project.cam_pos_y" step="10" />
+        </div>
+        <div class="prop-item">
+          <label>Z</label>
+          <input type="number" v-model.number="store.project.cam_pos_z" step="50" />
+        </div>
+      </div>
+      <div class="prop-group">
+        <span class="group-label">旋转</span>
+        <div class="prop-item">
+          <label>Yaw</label>
+          <input type="number" v-model.number="store.project.cam_yaw" step="5" />
+        </div>
+        <div class="prop-item">
+          <label>Pitch</label>
+          <input type="number" v-model.number="store.project.cam_pitch" step="5" />
+        </div>
+        <div class="prop-item">
+          <label>Roll</label>
+          <input type="number" v-model.number="store.project.cam_roll" step="5" />
+        </div>
+      </div>
+      <div class="prop-item">
+        <label>FOV</label>
+        <input type="number" v-model.number="store.project.cam_fov" step="5" min="1" max="179" />
+      </div>
+      <button class="kf-add-btn" @click="addCameraKeyframe" title="添加关键帧">◆ 添加关键帧</button>
+    </div>
+    <!-- 前景图层属性 -->
+    <div class="props-bar" v-else-if="store.currentLayer && store.currentLayer.type !== 'background'">
       <div class="prop-item">
         <label>X</label>
         <input type="number" v-model.number="store.currentLayer.x" step="1" />
@@ -79,6 +148,10 @@
       <div class="prop-item">
         <label>Y</label>
         <input type="number" v-model.number="store.currentLayer.y" step="1" />
+      </div>
+      <div class="prop-item" v-if="store.currentLayer.is3D">
+        <label>Z</label>
+        <input type="number" v-model.number="store.currentLayer.z" step="1" />
       </div>
       <div class="prop-item">
         <label>缩放</label>
@@ -93,6 +166,7 @@
         <input type="number" v-model.number="store.currentLayer.opacity" step="0.05" min="0" max="1" />
       </div>
     </div>
+    <!-- 背景图层属性 -->
     <div class="props-bar" v-else-if="store.currentLayer && store.currentLayer.type === 'background'">
       <div class="prop-item">
         <label>填充模式</label>
@@ -112,13 +186,51 @@ import { useTimelineStore } from '@/stores/timelineStore'
 
 const store = useTimelineStore()
 const timelinePanel = ref<HTMLElement>()
+const selectedTrack = ref<'camera' | 'layer'>('layer')
 
 const tickCount = computed(() => Math.ceil(store.project.duration) + 1)
 const playheadPos = computed(() => (store.currentTime / store.project.duration) * 100)
 
+function selectCameraTrack() {
+  selectedTrack.value = 'camera'
+}
+
+function selectLayerTrack(index: number) {
+  selectedTrack.value = 'layer'
+  store.selectLayer(index)
+}
+
+function addCameraKeyframe() {
+  const time = store.currentTime
+  const props = ['cam_pos_x', 'cam_pos_y', 'cam_pos_z', 'cam_yaw', 'cam_pitch', 'cam_roll', 'cam_fov']
+  for (const prop of props) {
+    const value = (store.project as any)[prop] ?? 0
+    store.setProjectKeyframe(prop, time, value)
+  }
+}
+
+function selectCameraKeyframe(kf: { time: number; prop: string; value: number }) {
+  store.setCurrentTime(kf.time)
+  selectedTrack.value = 'camera'
+}
+
+function onCameraTrackClick(e: MouseEvent) {
+  selectedTrack.value = 'camera'
+  const el = e.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+  store.setCurrentTime(ratio * store.project.duration)
+}
+
 function getLayerKeyframes(layer: any) {
   const kfs: { time: number; prop: string; value: number }[] = []
-  const props = ['x', 'y', 'scale', 'rotation', 'opacity', 'mask_size']
+  // 包含所有 2D 和 3D 属性
+  const props = [
+    'x', 'y', 'z', 'scale', 'rotation', 'opacity', 'mask_size',
+    'rotationX', 'rotationY', 'rotationZ',
+    'scaleX', 'scaleY', 'scaleZ',
+    'anchorX', 'anchorY'
+  ]
   for (const prop of props) {
     for (const f of (layer.keyframes?.[prop] || [])) {
       kfs.push({ time: f.time, prop, value: f.value })
@@ -126,6 +238,25 @@ function getLayerKeyframes(layer: any) {
   }
   return kfs
 }
+
+// 获取项目级别关键帧（摄像机等）
+const projectKeyframesList = computed(() => {
+  const kfs: { time: number; prop: string; value: number }[] = []
+  const props = [
+    'cam_pos_x', 'cam_pos_y', 'cam_pos_z',
+    'cam_yaw', 'cam_pitch', 'cam_roll', 'cam_fov'
+  ]
+  const pkf = store.projectKeyframes
+  for (const prop of props) {
+    const arr = pkf[prop]
+    if (arr && Array.isArray(arr)) {
+      for (const f of arr) {
+        kfs.push({ time: f.time, prop, value: f.value })
+      }
+    }
+  }
+  return kfs
+})
 
 function onRulerClick(e: MouseEvent) {
   const el = e.currentTarget as HTMLElement
@@ -135,6 +266,7 @@ function onRulerClick(e: MouseEvent) {
 }
 
 function onTrackClick(e: MouseEvent, index: number) {
+  selectedTrack.value = 'layer'
   store.selectLayer(index)
   const el = e.currentTarget as HTMLElement
   const rect = el.getBoundingClientRect()
@@ -232,6 +364,24 @@ function onTrackClick(e: MouseEvent, index: number) {
 .layer-row:hover .layer-del { opacity: 1; }
 .layer-del:hover { color: #f44; }
 
+.camera-row {
+  background: #2a3040;
+}
+.camera-row.active {
+  background: #3a4560;
+}
+
+.kf-btn {
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  color: #f39c12;
+  cursor: pointer;
+  font-size: 10px;
+}
+.kf-btn:hover { color: #f1c40f; }
+
 /* 右侧时间轴 */
 .timeline-panel {
   grid-row: 1;
@@ -324,6 +474,18 @@ function onTrackClick(e: MouseEvent, index: number) {
   transform: translate(-50%, -50%) rotate(45deg) scale(1.2);
 }
 
+.keyframe.camera-kf {
+  background: #f39c12;
+  border-color: #f1c40f;
+}
+
+.camera-track {
+  background: #252535;
+}
+.camera-track.active {
+  background: #353550;
+}
+
 .playhead-ext {
   position: absolute;
   top: 0;
@@ -374,5 +536,39 @@ function onTrackClick(e: MouseEvent, index: number) {
 .prop-item select:focus {
   outline: none;
   border-color: #3498db;
+}
+
+.camera-props {
+  background: #2a2a35;
+}
+
+.prop-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 12px;
+  border-right: 1px solid #444;
+  margin-right: 4px;
+}
+
+.group-label {
+  font-size: 9px;
+  color: #666;
+  min-width: 30px;
+}
+
+.kf-add-btn {
+  padding: 4px 10px;
+  background: #f39c12;
+  border: none;
+  border-radius: 3px;
+  color: #000;
+  font-size: 10px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.kf-add-btn:hover {
+  background: #f1c40f;
 }
 </style>

@@ -42,6 +42,18 @@
       
       <!-- 前景图层属性 -->
       <div class="prop-content" v-if="store.currentLayer.type !== 'background'">
+        <!-- 3D 模式开关 -->
+        <div class="prop-row single">
+          <div class="prop-item full">
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="store.currentLayer.is3D">
+              <span>启用 3D 模式</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 位置 -->
+        <div class="prop-group-title">位置</div>
         <div class="prop-row">
           <div class="prop-item">
             <label>X</label>
@@ -51,17 +63,74 @@
             <label>Y</label>
             <input type="number" v-model.number="store.currentLayer.y" step="1">
           </div>
-        </div>
-        <div class="prop-row">
-          <div class="prop-item">
-            <label>缩放</label>
-            <input type="number" v-model.number="store.currentLayer.scale" step="0.01" min="0.01">
-          </div>
-          <div class="prop-item">
-            <label>旋转</label>
-            <input type="number" v-model.number="store.currentLayer.rotation" step="1">
+          <div class="prop-item" v-if="store.currentLayer.is3D">
+            <label>Z</label>
+            <input type="number" v-model.number="store.currentLayer.z" step="1">
           </div>
         </div>
+
+        <!-- 2D 模式：简单缩放和旋转 -->
+        <template v-if="!store.currentLayer.is3D">
+          <div class="prop-row">
+            <div class="prop-item">
+              <label>缩放</label>
+              <input type="number" v-model.number="store.currentLayer.scale" step="0.01" min="0.01">
+            </div>
+            <div class="prop-item">
+              <label>旋转</label>
+              <input type="number" v-model.number="store.currentLayer.rotation" step="1">
+            </div>
+          </div>
+        </template>
+
+        <!-- 3D 模式：分轴旋转和缩放 -->
+        <template v-else>
+          <div class="prop-group-title">3D 旋转</div>
+          <div class="prop-row">
+            <div class="prop-item">
+              <label>X (Pitch)</label>
+              <input type="number" v-model.number="store.currentLayer.rotationX" step="1">
+            </div>
+            <div class="prop-item">
+              <label>Y (Yaw)</label>
+              <input type="number" v-model.number="store.currentLayer.rotationY" step="1">
+            </div>
+            <div class="prop-item">
+              <label>Z (Roll)</label>
+              <input type="number" v-model.number="store.currentLayer.rotationZ" step="1">
+            </div>
+          </div>
+
+          <div class="prop-group-title">3D 缩放</div>
+          <div class="prop-row">
+            <div class="prop-item">
+              <label>X</label>
+              <input type="number" v-model.number="store.currentLayer.scaleX" step="0.01" min="0.01">
+            </div>
+            <div class="prop-item">
+              <label>Y</label>
+              <input type="number" v-model.number="store.currentLayer.scaleY" step="0.01" min="0.01">
+            </div>
+            <div class="prop-item">
+              <label>Z</label>
+              <input type="number" v-model.number="store.currentLayer.scaleZ" step="0.01" min="0.01">
+            </div>
+          </div>
+
+          <div class="prop-group-title">锚点</div>
+          <div class="prop-row">
+            <div class="prop-item">
+              <label>锚点 X</label>
+              <input type="number" v-model.number="store.currentLayer.anchorX" step="1">
+            </div>
+            <div class="prop-item">
+              <label>锚点 Y</label>
+              <input type="number" v-model.number="store.currentLayer.anchorY" step="1">
+            </div>
+          </div>
+        </template>
+
+        <!-- 通用属性 -->
         <div class="prop-row">
           <div class="prop-item">
             <label>不透明度</label>
@@ -305,5 +374,33 @@ function moveLayerToBottom() {
 .prop-item select:focus {
   outline: none;
   border-color: #3a7bc8;
+}
+
+.prop-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #aaa;
+  margin: 12px 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #333;
+}
+
+.prop-group-title:first-child {
+  margin-top: 0;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #ddd;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #3a7bc8;
 }
 </style>

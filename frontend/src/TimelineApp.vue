@@ -13,11 +13,11 @@
       <div class="header-center">
         <span class="project-info">{{ store.project.width }}x{{ store.project.height }} @ {{ store.project.fps }} FPS</span>
       </div>
-      <div class="header-right">
-        <div class="project-inputs">
-          <div class="project-field">
-            <span class="field-label">W</span>
-            <input type="number" min="16" max="8192" :value="store.project.width" @input="updateProjectField('width', $event)" />
+        <div class="header-right">
+          <div class="project-inputs">
+            <div class="project-field">
+              <span class="field-label">W</span>
+              <input type="number" min="16" max="8192" :value="store.project.width" @input="updateProjectField('width', $event)" />
           </div>
           <div class="project-field">
             <span class="field-label">H</span>
@@ -28,14 +28,35 @@
             <input type="number" min="1" max="240" :value="store.project.fps" @input="updateProjectField('fps', $event)" />
           </div>
           <div class="project-field">
-            <span class="field-label">Frames</span>
-            <input type="number" min="1" :value="store.project.total_frames" @input="updateProjectField('total_frames', $event)" />
+              <span class="field-label">Frames</span>
+              <input type="number" min="1" :value="store.project.total_frames" @input="updateProjectField('total_frames', $event)" />
+            </div>
+            <div class="project-field pano-field">
+              <label class="hdr-toggle">
+                <input type="checkbox" v-model="panoEnabled" />
+                <span>Pano</span>
+              </label>
+              <label class="hdr-toggle cam-enable">
+                <input type="checkbox" v-model="camEnable" />
+                <span>Cam</span>
+              </label>
+              <div class="cam-row">
+                <input type="number" step="1" :value="camYaw" @input="camYaw = parseFloat(($event.target as HTMLInputElement).value)" title="Yaw" />
+                <input type="number" step="1" :value="camPitch" @input="camPitch = parseFloat(($event.target as HTMLInputElement).value)" title="Pitch" />
+                <input type="number" step="1" :value="camRoll" @input="camRoll = parseFloat(($event.target as HTMLInputElement).value)" title="Roll" />
+                <input type="number" step="1" min="10" max="170" :value="camFov" @input="camFov = parseFloat(($event.target as HTMLInputElement).value)" title="FOV" />
+              </div>
+              <div class="cam-row cam-row-3d">
+                <input type="number" step="1" :value="camPosX" @input="camPosX = parseFloat(($event.target as HTMLInputElement).value)" title="Pos X" />
+                <input type="number" step="1" :value="camPosY" @input="camPosY = parseFloat(($event.target as HTMLInputElement).value)" title="Pos Y" />
+                <input type="number" step="1" :value="camPosZ" @input="camPosZ = parseFloat(($event.target as HTMLInputElement).value)" title="Pos Z" />
+              </div>
+            </div>
           </div>
-        </div>
-        <button class="btn btn-primary" @click="addForeground">+ FG Layer</button>
-        <button class="btn btn-secondary" @click="addBackground">+ BG Layer</button>
-        <div class="header-divider"></div>
-        <button class="btn btn-accent" @click="save" title="保存到节点">Save</button>
+          <button class="btn btn-primary" @click="addForeground">+ FG Layer</button>
+          <button class="btn btn-secondary" @click="addBackground">+ BG Layer</button>
+          <div class="header-divider"></div>
+          <button class="btn btn-accent" @click="save" title="保存到节点">Save</button>
         <button class="btn btn-close" @click="close" title="关闭">Close</button>
       </div>
     </header>
@@ -69,12 +90,26 @@
               <input type="number" class="prop-input" :value="currentLayerProps.y.toFixed(0)" @input="updateProp('y', $event)" step="1" />
             </div>
             <div class="property-row">
+              <span class="prop-label">Position Z</span>
+              <input type="number" class="prop-input" :value="currentLayerProps.z.toFixed(0)" @input="updateProp('z', $event)" step="1" />
+            </div>
+            <div class="property-row">
               <span class="prop-label">Scale</span>
               <input type="number" class="prop-input" :value="(currentLayerProps.scale * 100).toFixed(0)" @input="updateScaleProp($event)" step="1" />
               <span class="prop-unit">%</span>
             </div>
             <div class="property-row">
-              <span class="prop-label">Rotation</span>
+              <span class="prop-label">Rot X</span>
+              <input type="number" class="prop-input" :value="currentLayerProps.rotationX.toFixed(0)" @input="updateProp('rotationX', $event)" step="1" />
+              <span class="prop-unit">deg</span>
+            </div>
+            <div class="property-row">
+              <span class="prop-label">Rot Y</span>
+              <input type="number" class="prop-input" :value="currentLayerProps.rotationY.toFixed(0)" @input="updateProp('rotationY', $event)" step="1" />
+              <span class="prop-unit">deg</span>
+            </div>
+            <div class="property-row">
+              <span class="prop-label">Rot Z</span>
               <input type="number" class="prop-input" :value="currentLayerProps.rotation.toFixed(0)" @input="updateProp('rotation', $event)" step="1" />
               <span class="prop-unit">deg</span>
             </div>
@@ -116,6 +151,10 @@
               <button class="btn btn-small btn-ghost" @click="clearExtractSelection">Clear</button>
             </div>
           </div>
+        </div>
+
+        <div class="inspector-section">
+          <ProjectSettings />
         </div>
 
         <div class="inspector-section">
@@ -162,6 +201,8 @@
           <button class="btn btn-small btn-ghost" @click="addKeyframe">+ Keyframe</button>
           <button class="btn btn-small btn-ghost" @click="deleteCurrentKeyframe">Del Key</button>
           <button class="btn btn-small btn-ghost" @click="clearAllKeyframes">Clear All</button>
+          <button class="btn btn-small btn-ghost" @click="addCameraKeyframe">+ Cam KF</button>
+          <button class="btn btn-small btn-ghost" @click="deleteCameraKeyframe">Del Cam KF</button>
           <div class="controls-divider"></div>
           <button class="nav-btn" @click="moveUp" :disabled="!store.currentLayer">Up</button>
           <button class="nav-btn" @click="moveDown" :disabled="!store.currentLayer">Down</button>
@@ -181,7 +222,12 @@
       <div class="timeline-body">
         <div class="layers-panel">
           <div class="layers-header">Layers ({{ store.layers.length }})</div>
-          <div class="layers-list" @scroll="onLayersScroll">
+<div class="layers-list" @scroll="onLayersScroll">
+            <div class="layer-item camera-layer">
+              <span class="expand-icon"> </span>
+              <span class="layer-type camera">C</span>
+              <span class="layer-name">Camera</span>
+            </div>
             <div
               v-for="(layer, i) in store.layers"
               :key="layer.id"
@@ -217,6 +263,23 @@
             </div>
 
             <div class="tracks-list" @dblclick="onTrackDblClick" @scroll="onTracksScroll">
+              <div
+                class="track-row camera-row"
+                @click="selectCamera()"
+              >
+                <div class="track-bar camera" :style="{ width: (projectDuration * pixelsPerSecond) + 'px' }">
+                  <div
+                    v-for="kf in getProjectKeyframesFlat()"
+                    :key="`cam-${kf.prop}-${kf.time}`"
+                    class="mini-kf camera"
+                    :style="{ left: (kf.time * pixelsPerSecond) + 'px' }"
+                    :title="`Camera ${kf.prop} @ ${kf.time.toFixed(2)}s`"
+                    @mousedown.stop="onCameraKeyframeDragStart($event, kf)"
+                    @contextmenu.prevent="deleteCameraKeyframeAt(kf.prop, kf.time)"
+                  ></div>
+                  <span class="track-label">Camera</span>
+                </div>
+              </div>
               <template v-for="(layer, layerIdx) in store.layers" :key="layer.id">
                 <div
                   class="track-row"
@@ -275,6 +338,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useTimelineStore } from '@/stores/timelineStore'
 import CanvasPreview from '@/components/timeline/CanvasPreview.vue'
+import ProjectSettings from '@/components/timeline/ProjectSettings.vue'
 
 const BASE_PIXELS_PER_SECOND = 80
 
@@ -298,6 +362,83 @@ function toNumber(value: any, fallback: number) {
 const fitMode = ref<'fit' | 'fill' | 'stretch'>('fit')
 const canvasZoom = ref(100)
 const canvasScale = computed(() => Math.max(0.1, canvasZoom.value / 100))
+const camEnable = computed({
+  get: () => !!store.project.cam_enable,
+  set: (v: boolean) => {
+    store.setProject({ cam_enable: v })
+    updateWidget('cam_enable', v ? 1 : 0)
+  }
+})
+
+const panoEnabled = computed({
+  get: () => store.project.pano_enable,
+  set: (v: boolean) => {
+    store.setProject({ pano_enable: v })
+    updateWidget('pano_enable', v ? 1 : 0)
+  }
+})
+
+const camYaw = computed({
+  get: () => store.project.cam_yaw,
+  set: (v: number) => {
+    const next = Number.isFinite(v) ? v : store.project.cam_yaw
+    store.setProject({ cam_yaw: next })
+    updateWidget('cam_yaw', next)
+  }
+})
+
+const camPitch = computed({
+  get: () => store.project.cam_pitch,
+  set: (v: number) => {
+    const next = Number.isFinite(v) ? v : store.project.cam_pitch
+    store.setProject({ cam_pitch: next })
+    updateWidget('cam_pitch', next)
+  }
+})
+
+const camRoll = computed({
+  get: () => store.project.cam_roll,
+  set: (v: number) => {
+    const next = Number.isFinite(v) ? v : store.project.cam_roll
+    store.setProject({ cam_roll: next })
+    updateWidget('cam_roll', next)
+  }
+})
+
+const camFov = computed({
+  get: () => store.project.cam_fov,
+  set: (v: number) => {
+    const parsed = Number.isFinite(v) ? v : store.project.cam_fov
+    const clamped = Math.min(170, Math.max(10, parsed))
+    store.setProject({ cam_fov: clamped })
+    updateWidget('cam_fov', clamped)
+  }
+})
+
+const camPosX = computed({
+  get: () => store.project.cam_pos_x || 0,
+  set: (v: number) => {
+    const next = Number.isFinite(v) ? v : (store.project.cam_pos_x || 0)
+    store.setProject({ cam_pos_x: next })
+    updateWidget('cam_pos_x', next)
+  }
+})
+const camPosY = computed({
+  get: () => store.project.cam_pos_y || 0,
+  set: (v: number) => {
+    const next = Number.isFinite(v) ? v : (store.project.cam_pos_y || 0)
+    store.setProject({ cam_pos_y: next })
+    updateWidget('cam_pos_y', next)
+  }
+})
+const camPosZ = computed({
+  get: () => store.project.cam_pos_z || 0,
+  set: (v: number) => {
+    const next = Number.isFinite(v) ? v : (store.project.cam_pos_z || 0)
+    store.setProject({ cam_pos_z: next })
+    updateWidget('cam_pos_z', next)
+  }
+})
 
 function handleGlobalKey(e: KeyboardEvent) {
   if (e.code === 'Space') {
@@ -364,6 +505,7 @@ onMounted(() => {
     window.addEventListener('resize', syncTimelineWidth)
   }
   window.addEventListener('keydown', handleGlobalKey, { capture: true })
+  window.addEventListener('beforeunload', beforeUnloadSave, { capture: true })
 })
 
 let isDraggingKeyframe = false
@@ -375,14 +517,29 @@ const selectedKeyframe = ref<{ layerIdx: number, prop: string, time: number } | 
 const animatableProps = [
   { key: 'x', label: 'X' },
   { key: 'y', label: 'Y' },
+  { key: 'z', label: 'Z' },
   { key: 'scale', label: 'Scl' },
-  { key: 'rotation', label: 'Rot' },
+  { key: 'rotation', label: 'RotZ' },
+  { key: 'rotationX', label: 'RotX' },
+  { key: 'rotationY', label: 'RotY' },
   { key: 'opacity', label: 'Op' }
+]
+
+const projectAnimProps = [
+  { key: 'cam_yaw', label: 'Yaw' },
+  { key: 'cam_pitch', label: 'Pitch' },
+  { key: 'cam_roll', label: 'Roll' },
+  { key: 'cam_fov', label: 'FOV' },
+  { key: 'cam_offset_x', label: 'OffX' },
+  { key: 'cam_offset_y', label: 'OffY' },
+  { key: 'cam_pos_x', label: 'PosX' },
+  { key: 'cam_pos_y', label: 'PosY' },
+  { key: 'cam_pos_z', label: 'PosZ' }
 ]
 
 const currentLayerProps = computed(() => {
   const layer = store.currentLayer
-  if (!layer) return { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
+  if (!layer) return { x: 0, y: 0, z: 0, scale: 1, rotation: 0, rotationX: 0, rotationY: 0, rotationZ: 0, opacity: 1 }
   
   const time = store.currentTime
   const kf = layer.keyframes || {}
@@ -390,8 +547,12 @@ const currentLayerProps = computed(() => {
   return {
     x: interpolateValue(kf.x, time, layer.x || 0),
     y: interpolateValue(kf.y, time, layer.y || 0),
+    z: interpolateValue(kf.z, time, layer.z || 0),
     scale: interpolateValue(kf.scale, time, layer.scale || 1),
     rotation: interpolateValue(kf.rotation, time, layer.rotation || 0),
+    rotationX: interpolateValue(kf.rotationX, time, layer.rotationX || 0),
+    rotationY: interpolateValue(kf.rotationY, time, layer.rotationY || 0),
+    rotationZ: interpolateValue(kf.rotationZ, time, layer.rotationZ || layer.rotation || 0),
     opacity: interpolateValue(kf.opacity, time, layer.opacity ?? 1)
   }
 })
@@ -468,6 +629,22 @@ function getAllLayerKeyframes(layer: any) {
       kfs.forEach((kf: any) => result.push({ time: kf.time, prop: prop.key }))
     }
   }
+  return result
+}
+
+function getProjectKeyframesFlat() {
+  const result: { time: number, prop: string, value: number }[] = []
+  const kfMap: Record<string, any[]> = (store as any).projectKeyframes?.value || (store as any).projectKeyframes || {}
+  projectAnimProps.forEach(p => {
+    const arr = kfMap[p.key]
+    if (Array.isArray(arr)) {
+      arr.forEach(kf => {
+        if (typeof kf?.time === 'number') {
+          result.push({ time: kf.time, prop: p.key, value: kf.value ?? 0 })
+        }
+      })
+    }
+  })
   return result
 }
 
@@ -648,13 +825,29 @@ function loadFromNodeWidgets() {
   const totalFrames = Math.max(1, Math.round(toNumber(getWidget('total_frames')?.value, store.project.total_frames)))
   const maskExpansion = toNumber(getWidget('mask_expansion')?.value, store.project.mask_expansion)
   const maskFeather = toNumber(getWidget('mask_feather')?.value, store.project.mask_feather)
+  const panoEnable = !!toNumber(getWidget('pano_enable')?.value, store.project.pano_enable ? 1 : 0)
+  const camYawVal = toNumber(getWidget('cam_yaw')?.value, store.project.cam_yaw)
+  const camPitchVal = toNumber(getWidget('cam_pitch')?.value, store.project.cam_pitch)
+  const camRollVal = toNumber(getWidget('cam_roll')?.value, store.project.cam_roll)
+  const camFovVal = toNumber(getWidget('cam_fov')?.value, store.project.cam_fov)
+  const camPosXVal = toNumber(getWidget('cam_pos_x')?.value, store.project.cam_pos_x || 0)
+  const camPosYVal = toNumber(getWidget('cam_pos_y')?.value, store.project.cam_pos_y || 0)
+  const camPosZVal = toNumber(getWidget('cam_pos_z')?.value, store.project.cam_pos_z || 0)
 
   let layers: any[] = []
   const rawLayers = getWidget('layers_keyframes')?.value
+  let projectKf: any = {}
   if (typeof rawLayers === 'string' && rawLayers.trim()) {
     try {
       const parsed = JSON.parse(rawLayers)
-      if (Array.isArray(parsed)) layers = parsed
+      if (Array.isArray(parsed)) {
+        layers = parsed
+      } else if (parsed && typeof parsed === 'object') {
+        if (Array.isArray(parsed.layers)) layers = parsed.layers
+        if (parsed.project_keyframes && typeof parsed.project_keyframes === 'object') {
+          projectKf = parsed.project_keyframes
+        }
+      }
     } catch (err) {
       console.warn('[AE Timeline] Failed to parse layers_keyframes widget', err)
     }
@@ -669,13 +862,22 @@ function loadFromNodeWidgets() {
     total_frames: totalFrames,
     duration: totalFrames / fps,
     mask_expansion: maskExpansion,
-    mask_feather: maskFeather
+    mask_feather: maskFeather,
+    pano_enable: panoEnable,
+    cam_yaw: camYawVal,
+    cam_pitch: camPitchVal,
+    cam_roll: camRollVal,
+    cam_fov: camFovVal,
+    cam_pos_x: camPosXVal,
+    cam_pos_y: camPosYVal,
+    cam_pos_z: camPosZVal
   }
 
   store.loadAnimation({
     project: projectData,
     layers
   })
+  store.projectKeyframes.value = projectKf
 
   if (store.layers.length > 0 && store.currentLayerIndex < 0) {
     store.selectLayer(0)
@@ -774,7 +976,11 @@ function save() {
   const findWidget = (n: string) => props.node.widgets.find((x: any) => x.name === n)
   const lw = findWidget('layers_keyframes')
   if (lw) {
-    const jsonStr = JSON.stringify(anim.layers)
+    const jsonStr = JSON.stringify({
+      layers: anim.layers,
+      project_keyframes: store.projectKeyframes,
+      project: anim.project
+    })
     lw.value = jsonStr
     console.log(`[AE Timeline] Saved layers_keyframes (len=${jsonStr.length})`)
     if (lw.inputEl) {
@@ -795,6 +1001,17 @@ function save() {
   updateWidget('height', store.project.height)
   updateWidget('fps', store.project.fps)
   updateWidget('total_frames', store.project.total_frames)
+  updateWidget('pano_enable', store.project.pano_enable ? 1 : 0)
+  updateWidget('cam_yaw', store.project.cam_yaw)
+  updateWidget('cam_pitch', store.project.cam_pitch)
+  updateWidget('cam_roll', store.project.cam_roll)
+  updateWidget('cam_fov', store.project.cam_fov)
+  updateWidget('cam_pos_x', store.project.cam_pos_x || 0)
+  updateWidget('cam_pos_y', store.project.cam_pos_y || 0)
+  updateWidget('cam_pos_z', store.project.cam_pos_z || 0)
+  updateWidget('cam_pos_x', store.project.cam_pos_x || 0)
+  updateWidget('cam_pos_y', store.project.cam_pos_y || 0)
+  updateWidget('cam_pos_z', store.project.cam_pos_z || 0)
   
   props.node.setDirtyCanvas?.(true, false)
 }
@@ -809,18 +1026,55 @@ function addKeyframe() { store.addKeyframe() }
 function deleteCurrentKeyframe() { store.deleteKeyframe() }
 function seekToZero() { store.setCurrentTime(0) }
 function seekToEnd() { store.setCurrentTime(projectDuration.value) }
+function addCameraKeyframe() {
+  const t = store.currentTime
+  const proj = store.project
+  const setKf = store.setProjectKeyframe
+  if (!setKf) return
+  projectAnimProps.forEach(p => {
+    const val = (proj as any)[p.key] ?? 0
+    setKf(p.key, t, val)
+  })
+}
+
+function deleteCameraKeyframe() {
+  const t = store.currentTime
+  const delKf = store.deleteProjectKeyframe
+  if (!delKf) return
+  projectAnimProps.forEach(p => delKf(p.key, t))
+}
+
+function deleteCameraKeyframeAt(prop: string, time: number) {
+  store.deleteProjectKeyframe?.(prop, time)
+}
+
+function onCameraKeyframeDragStart(e: MouseEvent, kf: { prop: string, time: number }) {
+  const startX = e.clientX
+  const startTime = kf.time
+  const onMove = (ev: MouseEvent) => {
+    const dx = ev.clientX - startX
+    const deltaTime = dx / pixelsPerSecond.value
+    const newTime = Math.max(0, startTime + deltaTime)
+    const val = kf.value ?? ((store.project as any)[kf.prop] ?? 0)
+    store.setProjectKeyframe?.(kf.prop, newTime, val)
+  }
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+function selectCamera() {
+  // no-op for now; reserved for future UI cues
+}
 
 function clearAllKeyframes() {
   if (!store.currentLayer) return
-  if (!confirm('纭畾瑕佹竻闄ゅ綋鍓嶅浘灞傜殑鎵€鏈夊叧閿抚鍚楋紵')) return
-  
-  const layer = store.currentLayer
-  const propKeys: string[] = ['x', 'y', 'scale', 'rotation', 'opacity', 'mask_size']
-  propKeys.forEach(prop => {
-    if (layer.keyframes?.[prop]) {
-      layer.keyframes[prop] = []
-    }
-  })
+  if (!confirm('Clear all keyframes on this layer?')) return
+  // 使用 store 的清理，覆盖 2D/3D 全部属性
+  store.clearAllKeyframes?.()
 }
 
 function clearCache() {
@@ -923,6 +1177,14 @@ function applyExtract() {
 
   store.extractMode.enabled = false
   canvasPreviewRef.value?.clearExtractSelection?.()
+}
+
+function beforeUnloadSave() {
+  try {
+    save()
+  } catch (e) {
+    console.warn('[AE Timeline] autosave failed', e)
+  }
 }
 
 function addForeground() {
@@ -1062,6 +1324,36 @@ onBeforeUnmount(() => {
   font-size: 11px !important;
   color: #8e8e93 !important;
   min-width: 20px !important;
+}
+
+.hdr-field {
+  gap: 6px !important;
+}
+
+.hdr-field input[type="number"] {
+  width: 56px !important;
+}
+
+.hdr-toggle {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  font-size: 11px !important;
+  color: #8e8e93 !important;
+}
+
+.pano-field {
+  gap: 6px !important;
+}
+
+.cam-row {
+  display: grid !important;
+  grid-template-columns: repeat(4, 52px) !important;
+  gap: 4px !important;
+}
+
+.pano-field input[type="number"] {
+  width: 100% !important;
 }
 
 .logo {
@@ -1614,6 +1906,7 @@ onBeforeUnmount(() => {
 
 .layer-type.foreground { background: rgba(10,132,255,0.3) !important; color: #0a84ff !important; }
 .layer-type.background { background: rgba(191,90,242,0.3) !important; color: #bf5af2 !important; }
+.layer-type.camera { background: rgba(251,188,4,0.3) !important; color: #fbbc04 !important; }
 
 .layer-name {
   flex: 1 !important;
@@ -1711,6 +2004,7 @@ onBeforeUnmount(() => {
 
 .track-row:hover { background: rgba(255,255,255,0.02) !important; }
 .track-row.active { background: rgba(10,132,255,0.08) !important; }
+.track-row.camera-row { height: 32px !important; }
 
 .track-bar {
   height: 16px !important;
@@ -1728,6 +2022,10 @@ onBeforeUnmount(() => {
   background: rgba(191,90,242,0.4) !important;
   border: 1px solid rgba(191,90,242,0.5) !important;
 }
+.track-bar.camera {
+  background: #fbbc0466 !important;
+  border: 1px solid #fbbc0488 !important;
+}
 
 .mini-kf {
   position: absolute !important;
@@ -1737,6 +2035,16 @@ onBeforeUnmount(() => {
   background: #ff9f0a !important;
   transform: translate(-3px, -3px) rotate(45deg) !important;
   border: 1px solid rgba(0,0,0,0.3) !important;
+}
+.mini-kf.camera { background: #fbbc04 !important; }
+.track-label {
+  position: absolute !important;
+  left: 6px !important;
+  top: 2px !important;
+  font-size: 11px !important;
+  color: #fff8dd !important;
+  opacity: 0.85 !important;
+  pointer-events: none !important;
 }
 
 .prop-track-row {

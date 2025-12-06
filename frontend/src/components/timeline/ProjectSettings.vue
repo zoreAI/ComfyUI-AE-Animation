@@ -18,6 +18,49 @@
       <label>帧数</label>
       <input type="number" :value="store.project.total_frames" @input="updateFrames" min="1" max="9999" />
     </div>
+
+    <!-- 3D 摄像机 -->
+    <div class="section-title">🎥 3D 摄像机</div>
+    <div class="setting-row">
+      <label>启用</label>
+      <input type="checkbox" :checked="store.project.cam_enable" @change="updateCamEnable" />
+    </div>
+    
+    <template v-if="store.project.cam_enable">
+      <div class="subsection-title">位置</div>
+      <div class="setting-row">
+        <label>X</label>
+        <input type="number" :value="store.project.cam_pos_x" @input="updateCamPosX" step="10" />
+      </div>
+      <div class="setting-row">
+        <label>Y</label>
+        <input type="number" :value="store.project.cam_pos_y" @input="updateCamPosY" step="10" />
+      </div>
+      <div class="setting-row">
+        <label>Z (距离)</label>
+        <input type="number" :value="store.project.cam_pos_z" @input="updateCamPosZ" step="50" />
+      </div>
+
+      <div class="subsection-title">旋转</div>
+      <div class="setting-row">
+        <label>Yaw (Y轴)</label>
+        <input type="number" :value="store.project.cam_yaw" @input="updateCamYaw" step="5" />
+      </div>
+      <div class="setting-row">
+        <label>Pitch (X轴)</label>
+        <input type="number" :value="store.project.cam_pitch" @input="updateCamPitch" step="5" />
+      </div>
+      <div class="setting-row">
+        <label>Roll (Z轴)</label>
+        <input type="number" :value="store.project.cam_roll" @input="updateCamRoll" step="5" />
+      </div>
+
+      <div class="subsection-title">投影</div>
+      <div class="setting-row">
+        <label>FOV</label>
+        <input type="number" :value="store.project.cam_fov" @input="updateCamFov" min="1" max="179" step="5" />
+      </div>
+    </template>
   </div>
 </template>
 
@@ -37,6 +80,30 @@ function updateFps(e: Event) {
 }
 function updateFrames(e: Event) {
   store.setProject({ total_frames: parseInt((e.target as HTMLInputElement).value) || 150 })
+}
+function updateCamEnable(e: Event) {
+  store.setProject({ cam_enable: (e.target as HTMLInputElement).checked })
+}
+function updateCamPosX(e: Event) {
+  store.setProject({ cam_pos_x: parseFloat((e.target as HTMLInputElement).value) || 0 })
+}
+function updateCamPosY(e: Event) {
+  store.setProject({ cam_pos_y: parseFloat((e.target as HTMLInputElement).value) || 0 })
+}
+function updateCamPosZ(e: Event) {
+  store.setProject({ cam_pos_z: parseFloat((e.target as HTMLInputElement).value) || 0 })
+}
+function updateCamYaw(e: Event) {
+  store.setProject({ cam_yaw: parseFloat((e.target as HTMLInputElement).value) || 0 })
+}
+function updateCamPitch(e: Event) {
+  store.setProject({ cam_pitch: parseFloat((e.target as HTMLInputElement).value) || 0 })
+}
+function updateCamRoll(e: Event) {
+  store.setProject({ cam_roll: parseFloat((e.target as HTMLInputElement).value) || 0 })
+}
+function updateCamFov(e: Event) {
+  store.setProject({ cam_fov: parseFloat((e.target as HTMLInputElement).value) || 90 })
 }
 </script>
 
@@ -66,7 +133,7 @@ function updateFrames(e: Event) {
   color: #888;
 }
 
-.setting-row input {
+.setting-row input[type="number"] {
   width: 80px;
   padding: 4px 6px;
   background: #1a1a1a;
@@ -78,8 +145,36 @@ function updateFrames(e: Event) {
   text-align: right;
 }
 
-.setting-row input:focus {
+.setting-row input[type="number"]:focus {
   outline: none;
   border-color: #3a7bc8;
+}
+
+.setting-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  accent-color: #3a7bc8;
+  flex-shrink: 0;
+}
+
+.setting-row input[type="checkbox"]:focus {
+  outline: 2px solid #3a7bc8;
+  outline-offset: 2px;
+}
+
+.subsection-title {
+  font-size: 10px;
+  color: #666;
+  margin: 8px 0 6px 0;
+  padding-left: 8px;
 }
 </style>

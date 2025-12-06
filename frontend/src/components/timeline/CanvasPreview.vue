@@ -60,36 +60,59 @@ let dragStartLayerY = 0
 let shiftKey = false
 let altKey = false
 
-// GPU 渲染状态
 const useGPU = ref(false)
 let gpuDevice: GPUDevice | null = null
 let gpuContext: GPUCanvasContext | null = null
 let gpuFormat: GPUTextureFormat = 'bgra8unorm'
 
-// Canvas 2D fallback
 let renderPending = false
 let ctx: CanvasRenderingContext2D | null = null
 const imageCache = new Map<string, HTMLImageElement>()
-
-// GPU 纹理缓存
 const gpuTextureCache = new Map<string, GPUTexture>()
 let gpuSampler: GPUSampler | null = null
 let gpuPipeline: GPURenderPipeline | null = null
 let gpuUniformBuffer: GPUBuffer | null = null
 let gpuBindGroupLayout: GPUBindGroupLayout | null = null
 
+// Panorama remap cache to avoid per-frame heavy trig
+const panoCache: {
+  key?: string
+  mapX?: Float32Array
+  mapY?: Float32Array
+  srcData?: Uint8ClampedArray
+  imgW?: number
+  imgH?: number
+  canvas?: HTMLCanvasElement
+  ctx?: CanvasRenderingContext2D | null
+  outW?: number
+  outH?: number
+} = {}
+
+// Pano orbit drag / pan
+let isPanoOrbit = false
+let isPanoPan = false
+let panoDragStartX = 0
+let panoDragStartY = 0
+let panoStartYaw = 0
+let panoStartPitch = 0
+let panoStartOffsetX = 0
+let panoStartOffsetY = 0
+
+let isCameraPan = false
+let cameraDragStartX = 0
+let cameraDragStartY = 0
+let cameraStartPosX = 0
+let cameraStartPosY = 0
+let cameraStartPosZ = 0
+
 onMounted(async () => {
-  // 先初始化 Canvas 2D 作为后备
   if (canvasRef.value) {
     ctx = canvasRef.value.getContext('2d', { 
       alpha: false,
       desynchronized: true
     })
   }
-  
-  // 尝试初始化 WebGPU
   await initWebGPU()
-
   scheduleRender()
 })
 
@@ -99,84 +122,10 @@ onUnmounted(() => {
 })
 
 
-// 初始化 WebGPU
 async function initWebGPU() {
-  // TODO: GPU 渲染有 uniform buffer 覆盖问题，暂时禁用
-  // 使用 Canvas 2D 确保稳定性
   console.log('[Timeline GPU] GPU rendering disabled, using Canvas 2D for stability')
   useGPU.value = false
   return
-  
-  /*
-  try {
-    // 检查 WebGPU 支持
-    if (!navigator.gpu) {
-      console.log('[Timeline GPU] WebGPU not supported')
-      return
-    }
-
-    // 初始化 TypeGPU
-    console.log('[Timeline GPU] Initializing TypeGPU...')
-    const root = await TGPU.init()
-    gpuDevice = root.device
-    console.log('[Timeline GPU] Device ready:', gpuDevice.limits.maxTextureDimension2D)
-    
-    // 获取 canvas context
-    if (!gpuCanvasRef.value) {
-      console.warn('[Timeline GPU] Canvas ref not ready')
-      return
-    }
-    
-    const ctx = gpuCanvasRef.value.getContext('webgpu')
-    if (!ctx) {
-      console.warn('[Timeline GPU] Failed to get WebGPU context')
-      return
-    }
-    
-    gpuContext = ctx
-    gpuFormat = navigator.gpu.getPreferredCanvasFormat()
-    
-    gpuContext.configure({
-      device: gpuDevice,
-      format: gpuFormat,
-      alphaMode: 'premultiplied'
-    })
-
-    // 创建采样器
-    gpuSampler = gpuDevice.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear'
-    })
-
-    // 创建 uniform buffer
-    gpuUniformBuffer = gpuDevice.createBuffer({
-      size: 80,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
-    })
-
-    // 创建 bind group layout
-    gpuBindGroupLayout = gpuDevice.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} }
-      ]
-    })
-
-    // 创建渲染管线
-    gpuPipeline = createGPUPipeline()
-    if (!gpuPipeline) {
-      console.warn('[Timeline GPU] Failed to create pipeline')
-      return
-    }
-
-    useGPU.value = true
-    console.log('[Timeline GPU] ✅ Fully initialized')
-  } catch (e) {
-    console.warn('[Timeline GPU] Init failed:', e)
-    useGPU.value = false
-  }
-  */
 }
 
 function createGPUPipeline(): GPURenderPipeline | null {
@@ -234,7 +183,6 @@ function destroyGPU() {
   gpuContext = null
 }
 
-// 使用 requestAnimationFrame 进行批量渲染
 function scheduleRender() {
   if (renderPending) return
   renderPending = true
@@ -253,10 +201,8 @@ watch(() => store.extractMode.enabled, () => {
   scheduleRender()
 })
 
-// GPU 渲染 - 同步方式
 function renderGPU() {
   if (!gpuDevice || !gpuContext || !gpuPipeline || !gpuSampler || !gpuUniformBuffer || !gpuBindGroupLayout) {
-    // 回退到 Canvas 2D
     renderCanvas2D()
     return
   }
@@ -265,7 +211,6 @@ function renderGPU() {
     const encoder = gpuDevice.createCommandEncoder()
     const textureView = gpuContext.getCurrentTexture().createView()
 
-    // 收集可渲染的图层（已有缓存纹理的）
     const renderableLayers: Array<{layer: any, texture: GPUTexture, props: any}> = []
     
     for (const layer of store.layers) {
@@ -279,12 +224,9 @@ function renderGPU() {
           props: getLayerProps(layer)
         })
       } else {
-        // 异步加载纹理，下一帧渲染
         loadGPUTexture(layer)
       }
     }
-
-    // 单个 render pass 渲染所有图层
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: textureView,
@@ -321,13 +263,11 @@ function renderGPU() {
     gpuDevice.queue.submit([encoder.finish()])
   } catch (e) {
     console.warn('[Timeline GPU] Render error:', e)
-    // 回退到 Canvas 2D
     useGPU.value = false
     renderCanvas2D()
   }
 }
 
-// 异步加载 GPU 纹理
 async function loadGPUTexture(layer: any) {
   if (!gpuDevice || gpuTextureCache.has(layer.id)) return
   
@@ -351,7 +291,7 @@ async function loadGPUTexture(layer: any) {
     )
 
     gpuTextureCache.set(layer.id, texture)
-    scheduleRender() // 纹理加载完成后重新渲染
+    scheduleRender()
   } catch (e) {
     console.warn('[Timeline GPU] Texture load error:', e)
   }
@@ -370,7 +310,6 @@ function createTransformMatrix(props: any, imgW: number, imgH: number): Float32A
   const canvasW = store.project.width
   const canvasH = store.project.height
   
-  // 计算 NDC 坐标
   const x = props.x / canvasW * 2
   const y = -props.y / canvasH * 2
   const scaleX = (imgW * props.scale) / canvasW
@@ -378,8 +317,6 @@ function createTransformMatrix(props: any, imgW: number, imgH: number): Float32A
   
   const cos = Math.cos(props.rotation * Math.PI / 180)
   const sin = Math.sin(props.rotation * Math.PI / 180)
-
-  // Column-major 4x4 矩阵
   return new Float32Array([
     scaleX * cos, scaleX * sin, 0, 0,
     -scaleY * sin, scaleY * cos, 0, 0,
@@ -388,7 +325,6 @@ function createTransformMatrix(props: any, imgW: number, imgH: number): Float32A
   ])
 }
 
-// 获取或缓存图片
 function getCachedImage(layer: any): HTMLImageElement | null {
   if (layer.img) return layer.img
   if (!layer.image_data) return null
@@ -413,7 +349,6 @@ function getCachedImage(layer: any): HTMLImageElement | null {
   return null
 }
 
-// 关键帧插值
 function interpolateValue(keyframes: any[], time: number, defaultValue: number): number {
   if (!keyframes || keyframes.length === 0) return defaultValue
   
@@ -422,11 +357,9 @@ function interpolateValue(keyframes: any[], time: number, defaultValue: number):
   if (time <= sorted[0].time) return sorted[0].value
   if (time >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value
   
-  // 找到当前时间所在的两个关键帧之间
   for (let i = 0; i < sorted.length - 1; i++) {
     if (time >= sorted[i].time && time <= sorted[i + 1].time) {
       const t = (time - sorted[i].time) / (sorted[i + 1].time - sorted[i].time)
-      // 线性插值
       return sorted[i].value + (sorted[i + 1].value - sorted[i].value) * t
     }
   }
@@ -434,11 +367,10 @@ function interpolateValue(keyframes: any[], time: number, defaultValue: number):
   return defaultValue
 }
 
-// 贝塞尔曲线插值
 function interpolateBezierPath(path: any[], time: number, duration: number): { x: number, y: number } | null {
   if (!path || path.length < 2) return null
   
-  const t = time / duration  // 归一化时间 0-1
+  const t = time / duration
   const totalPoints = path.length
   const segmentCount = totalPoints - 1
   const currentSegment = Math.min(Math.floor(t * segmentCount), segmentCount - 1)
@@ -449,7 +381,6 @@ function interpolateBezierPath(path: any[], time: number, duration: number): { x
   
   if (!p0 || !p1) return null
   
-  // 三次贝塞尔曲线插值
   const cp1x = p0.cp2x ?? (p0.x + (p1.x - p0.x) / 3)
   const cp1y = p0.cp2y ?? (p0.y + (p1.y - p0.y) / 3)
   const cp2x = p1.cp1x ?? (p0.x + (p1.x - p0.x) * 2 / 3)
@@ -467,16 +398,13 @@ function interpolateBezierPath(path: any[], time: number, duration: number): { x
   }
 }
 
-// 获取图层在当前时间的属性值（包含 2D、3D 和路径动画）
 function getLayerProps(layer: any) {
   const time = store.currentTime
   const kf = layer.keyframes || {}
   
-  // 基础 2D 属性
   let x = interpolateValue(kf.x, time, layer.x || 0)
   let y = interpolateValue(kf.y, time, layer.y || 0)
   
-  // 如果启用了路径动画，使用贝塞尔路径
   if (layer.usePathAnimation && layer.bezierPath && layer.bezierPath.length >= 2) {
     const pathPos = interpolateBezierPath(layer.bezierPath, time, store.project.duration)
     if (pathPos) {
@@ -486,14 +414,13 @@ function getLayerProps(layer: any) {
   }
   
   return {
-    // 2D 变换
     x,
     y,
+    z: interpolateValue(kf.z, time, layer.z || 0),
     scale: interpolateValue(kf.scale, time, layer.scale || 1),
     rotation: interpolateValue(kf.rotation, time, layer.rotation || 0),
     opacity: interpolateValue(kf.opacity, time, layer.opacity ?? 1),
     mask_size: interpolateValue(kf.mask_size, time, layer.mask_size || 0),
-    // 3D 变换
     rotationX: interpolateValue(kf.rotationX, time, layer.rotationX || 0),
     rotationY: interpolateValue(kf.rotationY, time, layer.rotationY || 0),
     rotationZ: interpolateValue(kf.rotationZ, time, layer.rotationZ || 0),
@@ -504,46 +431,134 @@ function getLayerProps(layer: any) {
 }
 
 function render() {
-  // 使用 GPU 渲染
   if (useGPU.value) {
     renderGPU()
     return
   }
-
-  // Canvas 2D 回退
   renderCanvas2D()
+}
+
+function createViewMatrix(yaw: number, pitch: number, roll: number, posX: number, posY: number, posZ: number): number[] {
+  const deg2rad = Math.PI / 180
+  const y = yaw * deg2rad
+  const p = pitch * deg2rad
+  const r = roll * deg2rad
+  
+  const cy = Math.cos(y), sy = Math.sin(y)
+  const cp = Math.cos(p), sp = Math.sin(p)
+  const cr = Math.cos(r), sr = Math.sin(r)
+  
+  const m00 = cy * cp
+  const m01 = cy * sp * sr - sy * cr
+  const m02 = cy * sp * cr + sy * sr
+  const m10 = sy * cp
+  const m11 = sy * sp * sr + cy * cr
+  const m12 = sy * sp * cr - cy * sr
+  const m20 = -sp
+  const m21 = cp * sr
+  const m22 = cp * cr
+  
+  return [
+    m00, m10, m20, 0,
+    -m01, -m11, -m21, 0,
+    m02, m12, m22, 0,
+    -(m00 * posX + m10 * posY + m20 * posZ),
+    -(-m01 * posX + -m11 * posY + -m21 * posZ),
+    -(m02 * posX + m12 * posY + m22 * posZ),
+    1
+  ]
+}
+
+function createProjectionMatrix(fov: number, aspect: number, near: number = 0.1, far: number = 10000): number[] {
+  const deg2rad = Math.PI / 180
+  const f = 1.0 / Math.tan(fov * deg2rad / 2)
+  const range = far - near
+  
+  return [
+    f / aspect, 0, 0, 0,
+    0, f, 0, 0,
+    0, 0, -(far + near) / range, -1,
+    0, 0, -(2 * far * near) / range, 0
+  ]
+}
+
+function multiplyMatrices(a: number[], b: number[]): number[] {
+  const result = new Array(16).fill(0)
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      for (let k = 0; k < 4; k++) {
+        result[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j]
+      }
+    }
+  }
+  return result
+}
+
+function transformPoint3D(matrix: number[], x: number, y: number, z: number): { x: number, y: number, z: number, w: number } {
+  const outX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12]
+  const outY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13]
+  const outZ = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]
+  const outW = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15]
+  return { x: outX, y: outY, z: outZ, w: outW }
+}
+
+function projectToScreen(point: { x: number, y: number, z: number, w: number }, canvasW: number, canvasH: number): { x: number, y: number, depth: number, visible: boolean } {
+  if (Math.abs(point.w) < 1e-6) {
+    return { x: 0, y: 0, depth: 0, visible: false }
+  }
+  
+  const invW = 1 / point.w
+  const ndcX = point.x * invW
+  const ndcY = point.y * invW
+  const depth = point.z * invW
+  
+  const screenX = (ndcX + 1) * 0.5 * canvasW
+  const screenY = (1 - ndcY) * 0.5 * canvasH
+  
+  const visible = depth > -1 && depth < 1 && 
+                  ndcX >= -1 && ndcX <= 1 && 
+                  ndcY >= -1 && ndcY <= 1
+  
+  return { x: screenX, y: screenY, depth, visible }
 }
 
 function renderCanvas2D() {
   if (!canvasRef.value || !ctx) return
 
-  // 清空画布
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, store.project.width, store.project.height)
 
-  // 绘制背景层
+  const panoEnabled = !!store.project.pano_enable
+  const cameraEnabled = !!store.project.cam_enable
+  const baseCamOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
+  const baseCamOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+  const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)
+  const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)
+  const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)
+
+  // 相机缩放做夹取，避免“飞出画布”
+  const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
+  const camOffsetX = cameraEnabled ? baseCamOffsetX + camPosX : baseCamOffsetX
+  const camOffsetY = cameraEnabled ? baseCamOffsetY + camPosY : baseCamOffsetY
+
   const bgLayer = store.layers.find(l => l.type === 'background')
   if (bgLayer) {
-    drawBackgroundLayer(ctx, bgLayer)
+    drawBackgroundLayer(ctx, bgLayer, camOffsetX, camOffsetY, cameraScale, cameraEnabled)
   }
 
-  // 绘制前景层（按数组顺序）
   store.layers.filter(l => l.type !== 'background').forEach(layer => {
-    drawForegroundLayer(ctx, layer)
+    drawForegroundLayer(ctx, layer, camOffsetX, camOffsetY, cameraEnabled, cameraScale)
   })
 
-  // 绘制路径（如果在路径编辑模式）
   if (store.pathMode.enabled && store.currentLayer?.bezierPath) {
     drawBezierPath(ctx, store.currentLayer.bezierPath)
   }
 
-  // 绘制背景提取选区叠加层
   if (store.extractMode.enabled) {
     drawExtractOverlay(ctx)
   }
 }
 
-// 绘制贝塞尔路径
 function drawBezierPath(ctx: CanvasRenderingContext2D, path: any[]) {
   if (!path || path.length === 0) return
   
@@ -555,7 +570,6 @@ function drawBezierPath(ctx: CanvasRenderingContext2D, path: any[]) {
   ctx.lineWidth = 2
   ctx.setLineDash([5, 5])
   
-  // 绘制路径线
   ctx.beginPath()
   ctx.moveTo(centerX + path[0].x, centerY + path[0].y)
   
@@ -577,7 +591,6 @@ function drawBezierPath(ctx: CanvasRenderingContext2D, path: any[]) {
   ctx.stroke()
   ctx.setLineDash([])
   
-  // 绘制路径点
   path.forEach((pt, i) => {
     ctx.beginPath()
     ctx.arc(centerX + pt.x, centerY + pt.y, 6, 0, Math.PI * 2)
@@ -588,7 +601,6 @@ function drawBezierPath(ctx: CanvasRenderingContext2D, path: any[]) {
     ctx.stroke()
   })
 
-  // 在路径终点绘制方向箭头，增强方向感知
   if (path.length >= 2) {
     const lastIndex = path.length - 1
     const p0 = path[lastIndex - 1]
@@ -598,8 +610,6 @@ function drawBezierPath(ctx: CanvasRenderingContext2D, path: any[]) {
     const cp1y = p0.cp2y ?? (p0.y + (p1.y - p0.y) / 3)
     const cp2x = p1.cp1x ?? (p0.x + (p1.x - p0.x) * 2 / 3)
     const cp2y = p1.cp1y ?? (p0.y + (p1.y - p0.y) * 2 / 3)
-
-    // 使用 t 接近 1 的导数近似终点切线方向
     const t = 0.99
     const mt = 1 - t
     const dx =
@@ -635,7 +645,181 @@ function drawBezierPath(ctx: CanvasRenderingContext2D, path: any[]) {
   ctx.restore()
 }
 
-// 将 customMask DataURL 懒加载为 maskCanvas，供渲染和后续编辑使用
+function drawBackgroundLayer3D(
+  ctx: CanvasRenderingContext2D, 
+  layer: any, 
+  viewProjMatrix: number[] | null,
+  camera3DEnabled: boolean,
+  camOffsetX: number,
+  camOffsetY: number,
+  canvasW: number,
+  canvasH: number
+) {
+  const panoEnabled = store.project.pano_enable
+  if (panoEnabled) {
+    drawBackgroundLayer(ctx, layer, camOffsetX, camOffsetY, 1, true)
+    return
+  }
+  
+  if (!camera3DEnabled || !viewProjMatrix) {
+    drawBackgroundLayer(ctx, layer, camOffsetX, camOffsetY, 1, false)
+    return
+  }
+
+  const img = getCachedImage(layer)
+  if (!img || img.width === 0 || img.height === 0) return
+
+  const props = getLayerProps(layer)
+  const imgW = img.width
+  const imgH = img.height
+
+  const layerX = props.x
+  const layerY = props.y
+  const layerZ = props.z || 0
+
+  const worldPoint = transformPoint3D(viewProjMatrix, layerX, layerY, layerZ)
+  const screen = projectToScreen(worldPoint, canvasW, canvasH)
+
+  if (!screen.visible) return
+
+  ctx.save()
+  ctx.globalAlpha = props.opacity
+
+  const perspectiveScale = Math.max(0.01, 1 / Math.max(0.1, -worldPoint.z / worldPoint.w))
+  
+  const mode = layer.bg_mode || 'fit'
+  let baseScale = 1
+  if (imgW > 0 && imgH > 0) {
+    if (mode === 'fit') {
+      baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+    } else if (mode === 'fill') {
+      baseScale = Math.max(canvasW / imgW, canvasH / imgH)
+    } else if (mode === 'stretch') {
+      baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+    }
+  }
+  if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
+
+  const finalScale = props.scale * baseScale * perspectiveScale
+
+  ctx.translate(screen.x + camOffsetX, screen.y + camOffsetY)
+  ctx.rotate((props.rotation * Math.PI) / 180)
+  ctx.scale(finalScale, finalScale)
+
+  ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
+
+  if (layer === store.currentLayer) {
+    ctx.strokeStyle = '#3a7bc8'
+    ctx.lineWidth = 2 / finalScale
+    ctx.strokeRect(-imgW / 2 - 2, -imgH / 2 - 2, imgW + 4, imgH + 4)
+  }
+
+  ctx.restore()
+}
+
+function drawForegroundLayer3D(
+  ctx: CanvasRenderingContext2D,
+  layer: any,
+  viewProjMatrix: number[] | null,
+  camera3DEnabled: boolean,
+  camOffsetX: number,
+  camOffsetY: number,
+  canvasW: number,
+  canvasH: number
+) {
+  if (!camera3DEnabled || !viewProjMatrix) {
+    drawForegroundLayer(ctx, layer, camOffsetX, camOffsetY, false, 1)
+    return
+  }
+
+  const img = getCachedImage(layer)
+  if (!img || img.width === 0 || img.height === 0) return
+
+  const props = getLayerProps(layer)
+  const w = img.width
+  const h = img.height
+
+  ensureMaskCanvas(layer, w, h)
+
+  const layerX = props.x
+  const layerY = props.y
+  const layerZ = props.z || 0
+
+  const worldPoint = transformPoint3D(viewProjMatrix, layerX, layerY, layerZ)
+  const screen = projectToScreen(worldPoint, canvasW, canvasH)
+
+  if (!screen.visible) return
+
+  ctx.save()
+  ctx.globalAlpha = props.opacity
+
+  const perspectiveScale = Math.max(0.01, 1 / Math.max(0.1, -worldPoint.z / worldPoint.w))
+
+  ctx.translate(screen.x + camOffsetX, screen.y + camOffsetY)
+  if (props.rotationX !== 0 || props.rotationY !== 0 || props.rotationZ !== 0) {
+    const rx = props.rotationX * Math.PI / 180
+    const ry = props.rotationY * Math.PI / 180
+    const rz = (props.rotationZ || props.rotation || 0) * Math.PI / 180
+    
+    const cosX = Math.cos(rx)
+    const sinX = Math.sin(rx)
+    const cosY = Math.cos(ry)
+    const sinY = Math.sin(ry)
+    const cosZ = Math.cos(rz)
+    const sinZ = Math.sin(rz)
+    
+    const m00 = cosY * cosZ
+    const m01 = cosY * sinZ
+    const m10 = sinX * sinY * cosZ - cosX * sinZ
+    const m11 = sinX * sinY * sinZ + cosX * cosZ
+    const m20 = cosX * sinY * cosZ + sinX * sinZ
+    const m21 = cosX * sinY * sinZ - sinX * cosZ
+    
+    const zScale = perspectiveScale / (1 + (sinY * w / 2 + sinX * h / 2) / (props.perspective || 1000))
+    
+    ctx.transform(
+      m00 * zScale, m10 * zScale,
+      m01 * zScale, m11 * zScale,
+      0, m20 * zScale * h / 2 + m21 * zScale * w / 2
+    )
+  } else {
+    ctx.rotate((props.rotation * Math.PI) / 180)
+  }
+
+  const finalScale = props.scale * perspectiveScale
+  ctx.scale(finalScale, finalScale)
+
+  const anchorOffsetX = (props.anchorX || 0) * w
+  const anchorOffsetY = (props.anchorY || 0) * h
+  ctx.translate(-anchorOffsetX, -anchorOffsetY)
+
+  if (layer.maskCanvas) {
+    const offscreen = document.createElement('canvas')
+    offscreen.width = w
+    offscreen.height = h
+    const offCtx = offscreen.getContext('2d')
+
+    if (offCtx) {
+      offCtx.clearRect(0, 0, w, h)
+      offCtx.globalCompositeOperation = 'source-over'
+      offCtx.drawImage(img, 0, 0, w, h)
+      offCtx.globalCompositeOperation = 'destination-in'
+      offCtx.drawImage(layer.maskCanvas, 0, 0, w, h)
+      ctx.drawImage(offscreen, 0, 0, w, h)
+    }
+  } else {
+    ctx.drawImage(img, 0, 0, w, h)
+  }
+
+  if (layer === store.currentLayer) {
+    ctx.strokeStyle = '#3a7bc8'
+    ctx.lineWidth = 2 / finalScale
+    ctx.strokeRect(-2, -2, w + 4, h + 4)
+  }
+
+  ctx.restore()
+}
+
 function ensureMaskCanvas(layer: any, imgW: number, imgH: number) {
   if (layer.maskCanvas || !layer.customMask) return
 
@@ -654,12 +838,12 @@ function ensureMaskCanvas(layer: any, imgW: number, imgH: number) {
   maskImg.src = layer.customMask
 }
 
-function drawBackgroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
+function drawBackgroundLayer(ctx: CanvasRenderingContext2D, layer: any, camOffsetX = 0, camOffsetY = 0, cameraScale = 1, cameraActive = false) {
   const img = getCachedImage(layer)
   if (!img || img.width === 0 || img.height === 0) return
 
-  // 获取插值后的属性
   const props = getLayerProps(layer)
+  const panoEnabled = store.project.pano_enable
 
   ctx.save()
   ctx.globalAlpha = props.opacity
@@ -669,33 +853,164 @@ function drawBackgroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
   const canvasH = store.project.height
   const imgW = img.width
   const imgH = img.height
-
   let baseScale = 1
-  
-  if (imgW > 0 && imgH > 0) {
-    if (mode === 'fit') {
-      baseScale = Math.min(canvasW / imgW, canvasH / imgH)
-    } else if (mode === 'fill') {
-      baseScale = Math.max(canvasW / imgW, canvasH / imgH)
-    } else if (mode === 'stretch') {
-      baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+  const isPanoCompatible = panoEnabled && imgW > 0 && imgH > 0 && Math.abs(imgW / imgH - 2.0) < 0.35
+
+  if (isPanoCompatible) {
+    const yaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)
+    const pitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)
+    const roll = store.interpolateProjectValue?.('cam_roll', store.currentTime, store.project.cam_roll || 0) ?? (store.project.cam_roll || 0)
+    const fov = Math.min(170, Math.max(10, store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov || 90) ?? (store.project.cam_fov || 90)))
+    const deg2rad = Math.PI / 180
+    const maxPreview = 1024
+    let prevW = canvasW
+    let prevH = canvasH
+    const scaleDown = Math.max(1, Math.max(canvasW, canvasH) / maxPreview)
+    if (scaleDown > 1.01) {
+      prevW = Math.max(1, Math.round(canvasW / scaleDown))
+      prevH = Math.max(1, Math.round(canvasH / scaleDown))
     }
+
+    const key = `${prevW}x${prevH}|${imgW}x${imgH}|${yaw}|${pitch}|${roll}|${fov}`
+    const needRebuild = panoCache.key !== key
+
+    if (needRebuild) {
+      const srcCanvas = document.createElement('canvas')
+      srcCanvas.width = imgW
+      srcCanvas.height = imgH
+      const sctx = srcCanvas.getContext('2d')
+      if (sctx) {
+        sctx.drawImage(img, 0, 0, imgW, imgH)
+        panoCache.srcData = sctx.getImageData(0, 0, imgW, imgH).data
+      } else {
+        panoCache.srcData = undefined
+      }
+
+      const aspect = canvasW / Math.max(1, canvasH)
+      const tanHalfFov = Math.tan((fov * deg2rad) / 2)
+      const cy = Math.cos(yaw * deg2rad), sy = Math.sin(yaw * deg2rad)
+      const cp = Math.cos(pitch * deg2rad), sp = Math.sin(pitch * deg2rad)
+      const cr = Math.cos(roll * deg2rad), sr = Math.sin(roll * deg2rad)
+      const R = [
+        cr * cy + sr * sp * sy,  sr * cp,  cr * -sy + sr * sp * cy,
+        -sr * cy + cr * sp * sy, cr * cp,  -sr * -sy + cr * sp * cy,
+        cp * sy,                -sp,       cp * cy
+      ]
+
+      const mapX = new Float32Array(prevW * prevH)
+      const mapY = new Float32Array(prevW * prevH)
+      for (let yPix = 0; yPix < prevH; yPix++) {
+        const ny = (yPix + 0.5) / prevH * 2 - 1
+        for (let xPix = 0; xPix < prevW; xPix++) {
+          const nx = (xPix + 0.5) / prevW * 2 - 1
+          let vx = nx * tanHalfFov * aspect
+          let vy = -ny * tanHalfFov
+          let vz = 1
+          const invLen = 1 / Math.hypot(vx, vy, vz)
+          vx *= invLen; vy *= invLen; vz *= invLen
+          const rx = R[0] * vx + R[1] * vy + R[2] * vz
+          const ry = R[3] * vx + R[4] * vy + R[5] * vz
+          const rz = R[6] * vx + R[7] * vy + R[8] * vz
+          const lon = Math.atan2(rx, rz)
+          const lat = Math.asin(Math.max(-1, Math.min(1, ry)))
+          const u = ((lon / (Math.PI * 2)) + 0.5) * imgW
+          const v = ((-lat / Math.PI) + 0.5) * imgH
+          let ui = Math.floor(u) % imgW; if (ui < 0) ui += imgW
+          let vi = Math.floor(v); vi = Math.max(0, Math.min(imgH - 1, vi))
+          const idx = yPix * prevW + xPix
+          mapX[idx] = ui
+          mapY[idx] = vi
+        }
+      }
+      panoCache.key = key
+      panoCache.mapX = mapX
+      panoCache.mapY = mapY
+      panoCache.imgW = imgW
+      panoCache.imgH = imgH
+      panoCache.outW = prevW
+      panoCache.outH = prevH
+
+      panoCache.canvas = document.createElement('canvas')
+      panoCache.canvas.width = prevW
+      panoCache.canvas.height = prevH
+      panoCache.ctx = panoCache.canvas.getContext('2d')
+    }
+
+    const srcData = panoCache.srcData
+    const mapX = panoCache.mapX
+    const mapY = panoCache.mapY
+    const pCanvas = panoCache.canvas
+    const pCtx = panoCache.ctx
+    const outW = panoCache.outW || 0
+    const outH = panoCache.outH || 0
+  if (srcData && mapX && mapY && pCanvas && pCtx && outW > 0 && outH > 0) {
+      const dstImage = pCtx.getImageData(0, 0, outW, outH)
+      const data = dstImage.data
+      const len = outW * outH
+      for (let idx = 0; idx < len; idx++) {
+        const ui = mapX[idx]
+        const vi = mapY[idx]
+        const si = (vi * imgW + ui) * 4
+        const di = idx * 4
+        data[di] = srcData[si]
+        data[di + 1] = srcData[si + 1]
+        data[di + 2] = srcData[si + 2]
+        data[di + 3] = 255
+      }
+      pCtx.putImageData(dstImage, 0, 0)
+      ctx.translate(canvasW / 2 + camOffsetX * cameraScale, canvasH / 2 + camOffsetY * cameraScale)
+      ctx.scale(cameraScale, cameraScale)
+      ctx.drawImage(pCanvas, -canvasW / 2, -canvasH / 2, canvasW, canvasH)
+    } else {
+      ctx.restore()
+      return drawBackgroundLayer(ctx, { ...layer, panoFallback: true, type: layer.type, bg_mode: layer.bg_mode }, camOffsetX, camOffsetY, cameraScale, cameraActive)
+    }
+  } else {
+    if (imgW > 0 && imgH > 0) {
+      if (mode === 'fit') {
+        baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+      } else if (mode === 'fill') {
+        baseScale = Math.max(canvasW / imgW, canvasH / imgH)
+      } else if (mode === 'stretch') {
+        baseScale = Math.min(canvasW / imgW, canvasH / imgH)
+      }
+    }
+
+    if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
+
+    // 获取摄像机参数
+    const camYaw = cameraActive ? (store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)) : 0
+    const camPitch = cameraActive ? (store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)) : 0
+    
+    const depthMul = 1 / Math.max(0.1, 1 + (props.z || 0) * 0.001)
+    const camMul = cameraActive ? cameraScale : 1
+    const camX = cameraActive ? camOffsetX : 0
+    const camY = cameraActive ? camOffsetY : 0
+    const parallax = cameraActive ? depthMul : 1
+    
+    // 计算摄像机旋转对背景位置的影响
+    let bgX = props.x
+    let bgY = props.y
+    if (cameraActive && (camYaw !== 0 || camPitch !== 0)) {
+      const yawRad = camYaw * Math.PI / 180
+      const pitchRad = camPitch * Math.PI / 180
+      const bgZ = props.z || 0
+      // 背景图层的视差效果更强
+      bgX -= Math.tan(yawRad) * (bgZ + 1000) * 0.3
+      bgY -= Math.tan(pitchRad) * (bgZ + 1000) * 0.3
+    }
+    
+    ctx.translate(
+      canvasW / 2 + (bgX + camX * parallax) * camMul,
+      canvasH / 2 + (bgY + camY * parallax) * camMul
+    )
+    ctx.rotate((props.rotation * Math.PI) / 180)
+    ctx.scale(props.scale * baseScale * camMul * depthMul, props.scale * baseScale * camMul * depthMul)
+
+    ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
   }
 
-  // 防止 scale 为无效值
-  if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
-
-  // 应用变换
-  ctx.translate(canvasW / 2 + props.x, canvasH / 2 + props.y)
-  ctx.rotate((props.rotation * Math.PI) / 180)
-  ctx.scale(props.scale * baseScale, props.scale * baseScale)
-
-  // 绘制图像居中
-  ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
-
-
-  // 选中时显示边框
-  if (layer === store.currentLayer) {
+  if (!cameraActive && layer === store.currentLayer) {
     ctx.strokeStyle = '#3a7bc8'
     ctx.lineWidth = 2 / (props.scale * baseScale)
     ctx.strokeRect(-imgW / 2 - 2, -imgH / 2 - 2, imgW + 4, imgH + 4)
@@ -704,40 +1019,57 @@ function drawBackgroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
   ctx.restore()
 }
 
-function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
+function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any, camOffsetX = 0, camOffsetY = 0, cameraActive = false, cameraScale = 1) {
   const img = getCachedImage(layer)
   if (!img || img.width === 0 || img.height === 0) return
 
-  // 获取插值后的属性（支持动画）
   const props = getLayerProps(layer)
   const w = img.width
   const h = img.height
 
-  // 将持久化的 customMask 还原成可用的 maskCanvas，避免重开界面后遮罩丢失
   ensureMaskCanvas(layer, w, h)
 
   ctx.save()
   
-  // 移动到图层位置
+  // 获取摄像机参数
+  const camYaw = cameraActive ? (store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)) : 0
+  const camPitch = cameraActive ? (store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)) : 0
+  const camFov = cameraActive ? (store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov || 90) ?? (store.project.cam_fov || 90)) : 90
+  
+  const depthMul = 1 / Math.max(0.1, 1 + (props.z || 0) * 0.001)
+  const camMul = cameraActive ? cameraScale : 1
+  const camX = cameraActive ? camOffsetX : 0
+  const camY = cameraActive ? camOffsetY : 0
+  const parallax = cameraActive ? depthMul : 1
+  
+  // 计算摄像机旋转对图层位置的影响
+  let layerX = props.x
+  let layerY = props.y
+  if (cameraActive && (camYaw !== 0 || camPitch !== 0)) {
+    const yawRad = camYaw * Math.PI / 180
+    const pitchRad = camPitch * Math.PI / 180
+    const layerZ = props.z || 0
+    // 简化的 3D 投影：摄像机旋转会导致图层位置偏移
+    layerX -= Math.tan(yawRad) * (layerZ + 500) * 0.5
+    layerY -= Math.tan(pitchRad) * (layerZ + 500) * 0.5
+  }
+  
   ctx.translate(
-    store.project.width / 2 + props.x,
-    store.project.height / 2 + props.y
+    store.project.width / 2 + (layerX + camX * parallax) * camMul,
+    store.project.height / 2 + (layerY + camY * parallax) * camMul
   )
   
-  // 应用 3D 变换（使用 CSS3D 风格的模拟）
+  // 图层自身的 3D 旋转
   if (props.rotationX !== 0 || props.rotationY !== 0) {
-    // 模拟 3D 透视效果
     const perspective = props.perspective || 1000
     const rx = props.rotationX * Math.PI / 180
     const ry = props.rotationY * Math.PI / 180
     
-    // 简化的 3D 变换矩阵
     const cosX = Math.cos(rx)
     const sinX = Math.sin(rx)
     const cosY = Math.cos(ry)
     const sinY = Math.sin(ry)
     
-    // 透视缩放
     const zScale = 1 / (1 + (sinY * w / 2 + sinX * h / 2) / perspective)
     
     ctx.transform(
@@ -747,33 +1079,25 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
     )
   }
   
-  // 2D 旋转
   ctx.rotate((props.rotation * Math.PI) / 180)
-  ctx.scale(props.scale, props.scale)
+  const scaleApplied = props.scale * camMul * depthMul
+  ctx.scale(scaleApplied, scaleApplied)
   ctx.globalAlpha = props.opacity
 
-  // 应用锚点偏移
   const anchorOffsetX = (props.anchorX || 0) * w
   const anchorOffsetY = (props.anchorY || 0) * h
 
-  // 绘制图像（支持遮罩）
   if (layer.maskCanvas) {
-    // 使用离屏 Canvas 先把图像与遮罩合成，避免影响其他图层
     const offscreen = document.createElement('canvas')
     offscreen.width = w
     offscreen.height = h
     const offCtx = offscreen.getContext('2d')
 
     if (offCtx) {
-      // 先画原始图像
       offCtx.clearRect(0, 0, w, h)
       offCtx.drawImage(img, 0, 0, w, h)
-
-      // 再用 destination-in 应用遮罩：白色区域保留，黑色区域抠掉
       offCtx.globalCompositeOperation = 'destination-in'
       offCtx.drawImage(layer.maskCanvas, 0, 0, w, h)
-
-      // 将合成结果画回主画布
       ctx.drawImage(
         offscreen,
         -w / 2 - anchorOffsetX,
@@ -782,15 +1106,12 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
         h
       )
     } else {
-      // 回退：直接绘制原始图像
       ctx.drawImage(img, -w / 2 - anchorOffsetX, -h / 2 - anchorOffsetY, w, h)
     }
   } else {
-    // 无遮罩时直接绘制
     ctx.drawImage(img, -w / 2 - anchorOffsetX, -h / 2 - anchorOffsetY, w, h)
   }
 
-  // 绘制选中边框
   if (layer === store.currentLayer && layer.img) {
     ctx.strokeStyle = '#3a7bc8'
     ctx.lineWidth = 2 / props.scale
@@ -798,7 +1119,6 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
     const h = layer.img.height
     ctx.strokeRect(-w / 2 - 2, -h / 2 - 2, w + 4, h + 4)
     
-    // 绘制控制点
     ctx.fillStyle = '#3a7bc8'
     const corners = [[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]]
     corners.forEach(([cx, cy]) => {
@@ -806,7 +1126,6 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
     })
   }
 
-  // 绘制遮罩框
   if (props.mask_size > 0) {
     ctx.strokeStyle = '#3ac88e'
     ctx.lineWidth = 2 / props.scale
@@ -822,12 +1141,10 @@ function drawForegroundLayer(ctx: CanvasRenderingContext2D, layer: any) {
   ctx.restore()
 }
 
-// 获取当前使用的 canvas
 function getActiveCanvas(): HTMLCanvasElement | null {
   return useGPU.value ? gpuCanvasRef.value || null : canvasRef.value || null
 }
 
-// 获取画布坐标（考虑显示缩放）
 function getCanvasCoords(e: MouseEvent) {
   const canvas = getActiveCanvas()
   if (!canvas) return { x: 0, y: 0 }
@@ -841,17 +1158,14 @@ function getCanvasCoords(e: MouseEvent) {
   }
 }
 
-// Mask 绘制状态
 let isMaskDrawing = false
 let maskCtx: CanvasRenderingContext2D | null = null
 
-// Extract 模式状态
 let extractMaskCanvas: HTMLCanvasElement | null = null
 let extractMaskCtx: CanvasRenderingContext2D | null = null
 let isExtractDrawing = false
 let extractSourceLayerId: string | null = null
 
-// 路径编辑状态
 let isPathEditing = false
 let selectedPathPoint = -1
 
@@ -860,11 +1174,50 @@ function onMouseDown(e: MouseEvent) {
   shiftKey = e.shiftKey
   altKey = e.altKey
   
-  if (!store.currentLayer) return
-  
   const coords = getCanvasCoords(e)
 
-  // Extract 模式
+  const panoReady = store.project.pano_enable && !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
+  if (panoReady) {
+    panoDragStartX = coords.x
+    panoDragStartY = coords.y
+    panoStartYaw = store.project.cam_yaw || 0
+    panoStartPitch = store.project.cam_pitch || 0
+    panoStartOffsetX = store.project.cam_offset_x || 0
+    panoStartOffsetY = store.project.cam_offset_y || 0
+    if (e.button === 1 || e.button === 2) {
+      isPanoOrbit = true
+      return
+    } else if (e.button === 0 && (!store.currentLayer || e.altKey)) {
+      isPanoPan = true
+      return
+    }
+  }
+
+  const camera3DEnabled = !!(store.project.cam_enable)
+  const cameraReady = camera3DEnabled && !store.project.pano_enable && !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
+  
+  if (cameraReady) {
+    cameraDragStartX = coords.x
+    cameraDragStartY = coords.y
+    cameraStartPosX = store.project.cam_pos_x || 0
+    cameraStartPosY = store.project.cam_pos_y || 0
+    cameraStartPosZ = store.project.cam_pos_z || 0
+    panoStartYaw = store.project.cam_yaw || 0
+    panoStartPitch = store.project.cam_pitch || 0
+    
+    if (e.button === 1 || e.button === 2) {
+      isPanoOrbit = true
+      return
+    }
+    
+    if (e.button === 0 && !store.currentLayer) {
+      isCameraPan = true
+      return
+    }
+  }
+  
+  if (!store.currentLayer) return
+  
   if (store.extractMode.enabled) {
     const resources = ensureExtractResources()
     if (!resources) {
@@ -876,7 +1229,6 @@ function onMouseDown(e: MouseEvent) {
     return
   }
   
-  // Mask 绘制模式
   if (store.maskMode.enabled) {
     isMaskDrawing = true
     initMaskCanvas()
@@ -884,13 +1236,11 @@ function onMouseDown(e: MouseEvent) {
     return
   }
   
-  // 路径编辑模式
   if (store.pathMode.enabled) {
     handlePathClick(coords, e)
     return
   }
   
-  // 普通拖动模式
   isDragging = true
   dragStartX = coords.x
   dragStartY = coords.y
@@ -903,24 +1253,57 @@ function onMouseDown(e: MouseEvent) {
 function onMouseMove(e: MouseEvent) {
   const coords = getCanvasCoords(e)
 
+  if (isPanoOrbit) {
+    const dx = coords.x - panoDragStartX
+    const dy = coords.y - panoDragStartY
+    const yaw = panoStartYaw + dx * 0.2
+    const pitch = Math.max(-89, Math.min(89, panoStartPitch + dy * 0.2))
+    store.setProject({ cam_yaw: yaw, cam_pitch: pitch })
+    store.setProjectKeyframe?.('cam_yaw', store.currentTime, yaw)
+    store.setProjectKeyframe?.('cam_pitch', store.currentTime, pitch)
+    scheduleRender()
+    return
+  }
+
+  if (isCameraPan) {
+    const dx = coords.x - cameraDragStartX
+    const dy = coords.y - cameraDragStartY
+    const nextX = cameraStartPosX + dx
+    const nextY = cameraStartPosY + dy
+    store.setProject({ cam_pos_x: nextX, cam_pos_y: nextY })
+    store.setProjectKeyframe?.('cam_pos_x', store.currentTime, nextX)
+    store.setProjectKeyframe?.('cam_pos_y', store.currentTime, nextY)
+    scheduleRender()
+    return
+  }
+
+  if (isPanoPan) {
+    const dx = coords.x - panoDragStartX
+    const dy = coords.y - panoDragStartY
+    const nextX = (panoStartOffsetX || 0) + dx
+    const nextY = (panoStartOffsetY || 0) + dy
+    store.setProject({ cam_offset_x: nextX, cam_offset_y: nextY })
+    store.setProjectKeyframe?.('cam_offset_x', store.currentTime, nextX)
+    store.setProjectKeyframe?.('cam_offset_y', store.currentTime, nextY)
+    scheduleRender()
+    return
+  }
+
   if (store.extractMode.enabled && isExtractDrawing) {
     drawExtractPoint(coords.x, coords.y, (e.buttons & 2) === 2 || e.altKey)
     return
   }
   
-  // Mask 绘制
   if (isMaskDrawing && store.maskMode.enabled) {
     drawMaskPoint(coords.x, coords.y)
     return
   }
   
-  // 路径点拖动
   if (isPathEditing && selectedPathPoint >= 0) {
     updatePathPoint(coords)
     return
   }
   
-  // 普通拖动
   if (!isDragging || !store.currentLayer) return
   
   let dx = coords.x - dragStartX
@@ -934,35 +1317,28 @@ function onMouseMove(e: MouseEvent) {
   const newX = dragStartLayerX + dx
   const newY = dragStartLayerY + dy
   
-  // 更新图层属性和关键帧
   updateLayerWithKeyframes(store.currentLayer, 'x', newX)
   updateLayerWithKeyframes(store.currentLayer, 'y', newY)
   
   scheduleRender()
 }
 
-// 更新图层属性，同时更新当前时间的关键帧
 function updateLayerWithKeyframes(layer: any, prop: string, value: number) {
   const time = store.currentTime
   
-  // 如果有关键帧，更新或创建当前时间的关键帧
   if (layer.keyframes && layer.keyframes[prop] && layer.keyframes[prop].length > 0) {
     const kfIndex = layer.keyframes[prop].findIndex((k: any) => Math.abs(k.time - time) < 0.05)
     if (kfIndex >= 0) {
-      // 更新已有关键帧
       layer.keyframes[prop][kfIndex] = { time: layer.keyframes[prop][kfIndex].time, value }
     } else {
-      // 当前时间没有关键帧，自动创建一个
       layer.keyframes[prop].push({ time, value })
       layer.keyframes[prop].sort((a: any, b: any) => a.time - b.time)
     }
   }
   
-  // 更新基础值并触发响应式
   store.updateLayer(store.currentLayerIndex, { [prop]: value })
 }
 
-// 初始化 Mask 画布
 function initMaskCanvas() {
   const layer = store.currentLayer
   if (!layer || !layer.img) return
@@ -975,7 +1351,6 @@ function initMaskCanvas() {
     
     if (maskCtx) {
       if (layer.customMask) {
-        // 从保存的数据恢复 Mask
         const img = new Image()
         img.onload = () => {
           maskCtx?.drawImage(img, 0, 0)
@@ -983,7 +1358,6 @@ function initMaskCanvas() {
         }
         img.src = layer.customMask
       } else {
-        // 初始全白（Alpha=1，完全显示）
         maskCtx.globalCompositeOperation = 'source-over'
         maskCtx.fillStyle = 'white'
         maskCtx.fillRect(0, 0, layer.maskCanvas.width, layer.maskCanvas.height)
@@ -994,12 +1368,10 @@ function initMaskCanvas() {
   }
 }
 
-// 绘制 Mask 点
 function drawMaskPoint(canvasX: number, canvasY: number) {
   const layer = store.currentLayer
   if (!layer) return
 
-  // 若尚未初始化 Mask 画布，则尝试初始化
   if (!maskCtx || !layer.maskCanvas) {
     initMaskCanvas()
   }
@@ -1010,7 +1382,6 @@ function drawMaskPoint(canvasX: number, canvasY: number) {
   const centerX = store.project.width / 2 + props.x
   const centerY = store.project.height / 2 + props.y
   
-  // 转换到图层本地坐标
   const localX = (canvasX - centerX) / props.scale + layer.img.width / 2
   const localY = (canvasY - centerY) / props.scale + layer.img.height / 2
   
@@ -1021,11 +1392,9 @@ function drawMaskPoint(canvasX: number, canvasY: number) {
   maskCtx.arc(localX, localY, brush, 0, Math.PI * 2)
   
   if (!store.maskMode.erase) {
-    // 画笔模式：挖空图像 -> 使遮罩变透明
     maskCtx.globalCompositeOperation = 'destination-out'
-    maskCtx.fillStyle = 'black' // 颜色不重要，关键是 Alpha 操作
+    maskCtx.fillStyle = 'black'
   } else {
-    // 橡皮/还原模式：显示图像 -> 使遮罩变不透明
     maskCtx.globalCompositeOperation = 'source-over'
     maskCtx.fillStyle = 'white'
   }
@@ -1054,7 +1423,6 @@ function ensureExtractResources() {
     extractMaskCanvas.height = img.height
     extractMaskCtx = extractMaskCanvas.getContext('2d')
     if (extractMaskCtx) {
-      // 初始全透明（Alpha=0，全不选）
       extractMaskCtx.clearRect(0, 0, img.width, img.height)
     }
     extractSourceLayerId = bgLayer.id || null
@@ -1103,21 +1471,14 @@ function drawExtractOverlay(ctx: CanvasRenderingContext2D) {
   ctx.rotate((props.rotation ?? 0) * Math.PI / 180)
   ctx.scale(props.scale ?? 1, props.scale ?? 1)
   
-  // 1. 先把图片和蒙版位置对齐
   const dx = -img.width / 2
   const dy = -img.height / 2
   
-  // 2. 绘制全屏半透明黑层 (表示"未选中/背景")
   ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
   ctx.fillRect(dx, dy, img.width, img.height)
 
-  // 3. 使用 destination-out 擦除黑层 (露出下方高亮原图，表示"选中")
   ctx.globalCompositeOperation = 'destination-out'
   ctx.drawImage(extractMaskCanvas, dx, dy, img.width, img.height)
-  
-  // 4. 可选：给边缘加个红色描边增强可见性 (source-over)
-  // ctx.globalCompositeOperation = 'source-over'
-  // ... (如果性能允许可以做边缘检测)
 
   ctx.restore()
 }
@@ -1138,34 +1499,26 @@ function hasExtractSelection() {
   return false
 }
 
-// 简单的图像修复/填充算法 (Content-Aware Fill 近似)
 function inpaintSimple(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  // 1. 获取原始图像 (已有透明洞)
   const original = ctx.canvas
   
-  // 2. 创建处理画布
   const tempC = document.createElement('canvas')
   tempC.width = width
   tempC.height = height
   const tCtx = tempC.getContext('2d')
   if (!tCtx) return null
 
-  // 3. 绘制原始图像
   tCtx.drawImage(original, 0, 0)
   
-  // 4. 边缘扩散 (简单的膨胀算法)
-  // 通过多次绘制并微小偏移，将边缘像素"推"进透明区域
-  const steps = 20 // 增加扩散次数以更好地填充，不使用模糊
-  tCtx.globalCompositeOperation = 'destination-over' // 在下方绘制，避免覆盖已有像素
+  const steps = 20
+  tCtx.globalCompositeOperation = 'destination-over'
   
   for (let i = 0; i < steps; i++) {
-    // 上下左右偏移绘制
     tCtx.drawImage(tempC, 1, 0)
     tCtx.drawImage(tempC, -1, 0)
     tCtx.drawImage(tempC, 0, 1)
     tCtx.drawImage(tempC, 0, -1)
     
-    // 对角线偏移 (增强填充速度)
     if (i % 2 === 0) {
         tCtx.drawImage(tempC, 1, 1)
         tCtx.drawImage(tempC, -1, -1)
@@ -1173,9 +1526,6 @@ function inpaintSimple(ctx: CanvasRenderingContext2D, width: number, height: num
         tCtx.drawImage(tempC, -1, 1)
     }
   }
-  
-  // 5. 直接像素填充，不再使用高斯模糊
-  // 继续使用边缘扩散算法填充剩余区域
   for (let i = 0; i < 10; i++) {
     tCtx.drawImage(tempC, 2, 0)
     tCtx.drawImage(tempC, -2, 0)
@@ -1193,7 +1543,7 @@ function inpaintSimple(ctx: CanvasRenderingContext2D, width: number, height: num
 function applyExtractSelection() {
   const resources = ensureExtractResources()
   if (!resources || !extractMaskCanvas || !extractMaskCtx) {
-    return { error: '背景图层尚未准备好' }
+    return { error: 'Background layer not ready' }
   }
 
   if (!hasExtractSelection()) {
@@ -1202,12 +1552,11 @@ function applyExtractSelection() {
 
   const { img } = resources
   
-  // 1. 生成前景图 (Extract)
   const fgCanvas = document.createElement('canvas')
   fgCanvas.width = img.width
   fgCanvas.height = img.height
   const fgCtx = fgCanvas.getContext('2d')
-  if (!fgCtx) return { error: '无法创建临时画布' }
+  if (!fgCtx) return { error: 'Cannot create temporary canvas' }
 
   fgCtx.drawImage(img, 0, 0)
   fgCtx.globalCompositeOperation = 'destination-in'
@@ -1215,50 +1564,41 @@ function applyExtractSelection() {
   
   const foregroundDataUrl = fgCanvas.toDataURL('image/png')
 
-  // 2. 生成背景图 (Inpaint)
   const bgCanvas = document.createElement('canvas')
   bgCanvas.width = img.width
   bgCanvas.height = img.height
   const bgCtx = bgCanvas.getContext('2d')
-  if (!bgCtx) return { error: '无法创建背景画布' }
+  if (!bgCtx) return { error: 'Cannot create background canvas' }
   
-  // A. 绘制原背景
   bgCtx.drawImage(img, 0, 0)
   
-  // B. 挖空 (Destination-Out)
   bgCtx.globalCompositeOperation = 'destination-out'
   bgCtx.drawImage(extractMaskCanvas, 0, 0)
   
-  // C. 像素填充 (Inpaint)
-  bgCtx.globalCompositeOperation = 'source-over' // 恢复
-  const backgroundDataUrl = inpaintSimple(bgCtx, img.width, img.height) || img.src // 失败则回退
+  bgCtx.globalCompositeOperation = 'source-over'
+  const backgroundDataUrl = inpaintSimple(bgCtx, img.width, img.height) || img.src
 
-  // 3. 保存 Extract Mask 数据 (用于后续编辑)
   const extractMaskDataUrl = extractMaskCanvas.toDataURL('image/png')
   
   return { 
       foregroundDataUrl,
       backgroundDataUrl,
-      extractMaskDataUrl  // Extract 图层的 Mask 数据
+      extractMaskDataUrl
   }
 }
 
-// 路径点击处理
 function handlePathClick(coords: { x: number, y: number }, e: MouseEvent) {
   const layer = store.currentLayer
   if (!layer) return
   
   if (!layer.bezierPath) layer.bezierPath = []
   
-  // 检查是否点击了现有路径点
   const hitIndex = findPathPointAt(coords)
   
   if (hitIndex >= 0) {
-    // 选中路径点进行拖动
     selectedPathPoint = hitIndex
     isPathEditing = true
   } else {
-    // 添加新路径点
     const centerX = store.project.width / 2
     const centerY = store.project.height / 2
     
@@ -1275,7 +1615,6 @@ function handlePathClick(coords: { x: number, y: number }, e: MouseEvent) {
   }
 }
 
-// 查找路径点
 function findPathPointAt(coords: { x: number, y: number }): number {
   const layer = store.currentLayer
   if (!layer || !layer.bezierPath) return -1
@@ -1295,7 +1634,6 @@ function findPathPointAt(coords: { x: number, y: number }): number {
   return -1
 }
 
-// 更新路径点
 function updatePathPoint(coords: { x: number, y: number }) {
   const layer = store.currentLayer
   if (!layer || !layer.bezierPath || selectedPathPoint < 0) return
@@ -1315,27 +1653,57 @@ function onMouseUp() {
   isExtractDrawing = false
   isPathEditing = false
   selectedPathPoint = -1
+  isPanoOrbit = false
+  isPanoPan = false
+  isCameraPan = false
 }
 
 function onWheel(e: WheelEvent) {
-  if (!store.currentLayer) return
-  
   const delta = e.deltaY > 0 ? -0.05 : 0.05
-  const layer = store.currentLayer
   
-  if (e.shiftKey) {
-    // Shift + 滚轮：旋转
-    const props = getLayerProps(layer)
-    const newRotation = props.rotation + (delta > 0 ? 5 : -5)
-    updateLayerWithKeyframes(layer, 'rotation', newRotation)
-  } else if (e.altKey) {
-    // Alt + 滚轮：调整透明度
-    const props = getLayerProps(layer)
-    const newOpacity = Math.max(0, Math.min(1, props.opacity + delta))
-    updateLayerWithKeyframes(layer, 'opacity', newOpacity)
+  const isCameraWheel = store.project.pano_enable &&
+    !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled &&
+    (!store.currentLayer || e.ctrlKey || e.altKey)
+
+  if (isCameraWheel) {
+    const nextFov = Math.min(170, Math.max(10, (store.project.cam_fov || 90) + (delta > 0 ? 2 : -2)))
+    store.setProject({ cam_fov: nextFov })
+    store.setProjectKeyframe?.('cam_fov', store.currentTime, nextFov)
+    scheduleRender()
+    return
+  }
+
+  const camera3DEnabled = !!(store.project.cam_enable)
+  const cameraReady = camera3DEnabled && !store.project.pano_enable &&
+    !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled &&
+    !store.currentLayer
+
+  if (cameraReady && !store.currentLayer) {
+    const currentZ = store.project.cam_pos_z || 0
+    const step = 5
+    const nextZ = currentZ + (delta > 0 ? step : -step)
+    store.setProject({ cam_pos_z: nextZ })
+    store.setProjectKeyframe?.('cam_pos_z', store.currentTime, nextZ)
+    scheduleRender()
+    return
+  }
+
+  if (!store.currentLayer) return
+
+  const layer = store.currentLayer
+  const props = getLayerProps(layer)
+  const rotationStep = 2
+  
+  if (e.shiftKey && !e.ctrlKey && !e.altKey) {
+    const newRotationX = props.rotationX + (delta > 0 ? rotationStep : -rotationStep)
+    updateLayerWithKeyframes(layer, 'rotationX', newRotationX)
+  } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+    const newRotationY = props.rotationY + (delta > 0 ? rotationStep : -rotationStep)
+    updateLayerWithKeyframes(layer, 'rotationY', newRotationY)
+  } else if (e.altKey && !e.shiftKey && !e.ctrlKey) {
+    const newRotationZ = (props.rotationZ || props.rotation || 0) + (delta > 0 ? rotationStep : -rotationStep)
+    updateLayerWithKeyframes(layer, 'rotationZ', newRotationZ)
   } else {
-    // 普通滚轮：缩放
-    const props = getLayerProps(layer)
     const newScale = Math.max(0.1, Math.min(5, props.scale + delta))
     updateLayerWithKeyframes(layer, 'scale', newScale)
   }
@@ -1372,7 +1740,6 @@ function onKeyDown(e: KeyboardEvent) {
       break
     case 'r':
     case 'R':
-      // 重置变换
       updateLayerWithKeyframes(layer, 'x', 0)
       updateLayerWithKeyframes(layer, 'y', 0)
       updateLayerWithKeyframes(layer, 'scale', 1)
@@ -1383,7 +1750,7 @@ function onKeyDown(e: KeyboardEvent) {
       break
     case 'Delete':
     case 'Backspace':
-      if (confirm('删除当前图层?')) {
+      if (confirm('Delete current layer?')) {
         store.removeLayer(store.currentLayerIndex)
       }
       e.preventDefault()
@@ -1426,17 +1793,12 @@ defineExpose({
 canvas {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
   cursor: move;
-  /* 关键修复：显示尺寸由 JavaScript 动态设置（通过 style.width 和 style.height） */
-  /* 内部分辨率由 :width 和 :height 属性决定，用于渲染质量 */
-  /* CSS 只设置基本样式，不设置尺寸 */
   outline: none;
-  /* GPU 加速 */
   will-change: contents;
   transform: translateZ(0);
   image-rendering: -webkit-optimize-contrast;
   box-sizing: border-box;
   display: block;
-  /* 确保 canvas 不会溢出 */
   contain: layout style paint;
 }
 
@@ -1445,7 +1807,6 @@ canvas:focus {
 }
 
 .canvas-info {
-  /* 确保在画布下方显示，使用 relative 定位 */
   position: relative;
   margin-top: 8px;
   margin-left: auto;

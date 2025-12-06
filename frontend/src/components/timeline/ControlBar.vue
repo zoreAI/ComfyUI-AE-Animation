@@ -85,7 +85,7 @@ function deleteKeyframe() {
 }
 
 function clearAllKeyframes() {
-  if (confirm('清除所有关键帧？')) {
+  if (confirm('Clear all keyframes?')) {
     store.clearAllKeyframes()
   }
 }
