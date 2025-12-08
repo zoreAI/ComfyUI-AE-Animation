@@ -77,6 +77,7 @@ export interface Project {
   cam_pos_x?: number
   cam_pos_y?: number
   cam_pos_z?: number
+  preview_mode?: '2d' | '3d-css'
 }
 
 export interface ProjectKeyframes {
@@ -110,7 +111,8 @@ export const useTimelineStore = defineStore('timeline', () => {
     cam_offset_y: 0,
     cam_pos_x: 0,
     cam_pos_y: 0,
-    cam_pos_z: 0
+    cam_pos_z: 1000,
+    preview_mode: '2d'  // '2d' or '3d-css'
   })
   const projectKeyframes = ref<ProjectKeyframes>({})
 
@@ -352,7 +354,8 @@ export const useTimelineStore = defineStore('timeline', () => {
       cam_offset_y: proj.cam_offset_y || 0,
       cam_pos_x: proj.cam_pos_x || 0,
       cam_pos_y: proj.cam_pos_y || 0,
-      cam_pos_z: proj.cam_pos_z || 0
+      cam_pos_z: proj.cam_pos_z !== undefined ? proj.cam_pos_z : 1000,
+      preview_mode: proj.preview_mode || '2d'
     })
     projectKeyframes.value = proj.project_keyframes || {}
 

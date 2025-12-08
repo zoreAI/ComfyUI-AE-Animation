@@ -173,6 +173,9 @@ class AEAnimation(io.ComfyNode):
                 io.Int.Input("mask_feather", default=0, min=0, max=100),
                 io.Int.Input("cam_enable", default=0, min=0, max=1, optional=True),
                 io.Int.Input("pano_enable", default=0, min=0, max=1, optional=True),
+                io.Float.Input("cam_pos_x", default=0.0, optional=True),
+                io.Float.Input("cam_pos_y", default=0.0, optional=True),
+                io.Float.Input("cam_pos_z", default=1000.0, optional=True),
                 io.Float.Input("cam_yaw", default=0.0, optional=True),
                 io.Float.Input("cam_pitch", default=0.0, optional=True),
                 io.Float.Input("cam_roll", default=0.0, optional=True),
@@ -426,6 +429,9 @@ class AEAnimation(io.ComfyNode):
         mask_feather: int,
         cam_enable: int = 0,
         pano_enable: int = 0,
+        cam_pos_x: float = 0.0,
+        cam_pos_y: float = 0.0,
+        cam_pos_z: float = 1000.0,
         cam_yaw: float = 0.0,
         cam_pitch: float = 0.0,
         cam_roll: float = 0.0,
@@ -480,9 +486,9 @@ class AEAnimation(io.ComfyNode):
             cam_pitch_t = interp_kf("cam_pitch", cam_pitch, time)
             cam_roll_t = interp_kf("cam_roll", cam_roll, time)
             cam_fov_t = interp_kf("cam_fov", cam_fov, time)
-            cam_pos_x_t = interp_kf("cam_pos_x", 0.0, time)
-            cam_pos_y_t = interp_kf("cam_pos_y", 0.0, time)
-            cam_pos_z_t = interp_kf("cam_pos_z", 1000.0, time)  # Default camera distance
+            cam_pos_x_t = interp_kf("cam_pos_x", cam_pos_x, time)
+            cam_pos_y_t = interp_kf("cam_pos_y", cam_pos_y, time)
+            cam_pos_z_t = interp_kf("cam_pos_z", cam_pos_z, time)
 
             # Build camera matrices
             view_matrix = Transform3D.build_view_matrix(cam_pos_x_t, cam_pos_y_t, cam_pos_z_t, cam_yaw_t, cam_pitch_t, cam_roll_t)
@@ -574,6 +580,12 @@ class AEAnimation(io.ComfyNode):
                         pano_cache = (map_x, map_y, *cache_key)
                     img_np = cv2.remap(img_np, pano_cache[0], pano_cache[1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
                     cls._render_layer_2d(img_np, 0, 0, 1.0, 0, canvas, mask_canvas, opacity, is_foreground, width, height, "fit")
+                elif pano_enabled and is_foreground:
+                    # Pano模式下前景图层使用2D渲染（不受摄像机3D变换影响）
+                    cls._render_layer_2d(
+                        img_np, data["x"], data["y"], data["scale_2d"], data["rotation_2d"],
+                        canvas, mask_canvas, opacity, is_foreground, width, height, "fit"
+                    )
                 elif is_3d or camera_active:
                     # 3D rendering with perspective
                     model_matrix = Transform3D.build_model_matrix(

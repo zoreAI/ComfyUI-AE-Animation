@@ -19,6 +19,18 @@
       <input type="number" :value="store.project.total_frames" @input="updateFrames" min="1" max="9999" />
     </div>
 
+    <!-- 渲染模式 -->
+    <div class="section-title">🖥️ 预览渲染</div>
+    <div class="setting-row">
+      <label>GPU加速</label>
+      <input type="checkbox" :checked="!gpuDisabled" @change="toggleGPU" />
+    </div>
+    <div class="setting-note" v-if="gpuDisabled">
+      <small style="color: #f90; font-size: 10px;">
+        ⚠️ 已禁用GPU，使用Canvas 2D渲染
+      </small>
+    </div>
+
     <!-- 3D 摄像机 -->
     <div class="section-title">🎥 3D 摄像机</div>
     <div class="setting-row">
@@ -60,14 +72,50 @@
         <label>FOV</label>
         <input type="number" :value="store.project.cam_fov" @input="updateCamFov" min="1" max="179" step="5" />
       </div>
+
+      <div class="subsection-title">预览模式</div>
+      <div class="setting-row">
+        <label>模式</label>
+        <select :value="store.project.preview_mode || '2d'" @change="updatePreviewMode" style="width: 80px; padding: 4px; background: #1a1a1a; border: 1px solid #444; border-radius: 3px; color: #fff; font-size: 11px;">
+          <option value="2d">2D 近似</option>
+          <option value="3d-css">3D CSS (实验性)</option>
+        </select>
+      </div>
+      <div class="setting-note">
+        <small style="color: #666; font-size: 10px; line-height: 1.4;">
+          ⚠️ 预览仅为近似效果<br/>
+          最终渲染使用完整3D透视
+        </small>
+      </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useTimelineStore } from '@/stores/timelineStore'
 
 const store = useTimelineStore()
+
+// GPU开关状态
+const gpuDisabled = ref(false)
+
+onMounted(() => {
+  gpuDisabled.value = localStorage.getItem('timeline_disable_gpu') === 'true'
+})
+
+function toggleGPU(e: Event) {
+  const enabled = (e.target as HTMLInputElement).checked
+  if (enabled) {
+    localStorage.removeItem('timeline_disable_gpu')
+    gpuDisabled.value = false
+  } else {
+    localStorage.setItem('timeline_disable_gpu', 'true')
+    gpuDisabled.value = true
+  }
+  // 提示用户需要刷新页面
+  alert('GPU设置已更改，请刷新页面以应用更改。')
+}
 
 function updateWidth(e: Event) {
   store.setProject({ width: parseInt((e.target as HTMLInputElement).value) || 1280 })
@@ -104,6 +152,10 @@ function updateCamRoll(e: Event) {
 }
 function updateCamFov(e: Event) {
   store.setProject({ cam_fov: parseFloat((e.target as HTMLInputElement).value) || 90 })
+}
+function updatePreviewMode(e: Event) {
+  const mode = (e.target as HTMLSelectElement).value as '2d' | '3d-css'
+  store.setProject({ preview_mode: mode })
 }
 </script>
 
@@ -176,5 +228,13 @@ function updateCamFov(e: Event) {
   color: #666;
   margin: 8px 0 6px 0;
   padding-left: 8px;
+}
+
+.setting-note {
+  margin: 8px 0;
+  padding: 8px;
+  background: rgba(255, 152, 0, 0.1);
+  border-left: 2px solid #ff9800;
+  border-radius: 3px;
 }
 </style>

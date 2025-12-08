@@ -26,11 +26,17 @@ export function useCanvasInteraction(
   let panoStartOffsetY = 0
 
   let isCameraPan = false
+  let isCameraOrbit = false
+  let isCameraDolly = false
+  let isCameraRoll = false
   let cameraDragStartX = 0
   let cameraDragStartY = 0
   let cameraStartPosX = 0
   let cameraStartPosY = 0
   let cameraStartPosZ = 0
+  let cameraStartYaw = 0
+  let cameraStartPitch = 0
+  let cameraStartRoll = 0
 
   let isMaskDrawing = false
   let maskCtx: CanvasRenderingContext2D | null = null
@@ -42,6 +48,15 @@ export function useCanvasInteraction(
 
   let isPathEditing = false
   let selectedPathPoint = -1
+
+  function cameraControlAllowed(e?: MouseEvent | WheelEvent) {
+    const toolsOff = !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
+    if (!toolsOff) return false
+    if (!store.project.cam_enable || store.project.pano_enable) return false
+    // 按住 Ctrl 时优先图层拖动
+    if (e && 'ctrlKey' in e && e.ctrlKey) return false
+    return true
+  }
 
   function getCanvasCoords(e: MouseEvent) {
     const canvas = interactionCanvasRef.value || canvasRef.value
@@ -79,6 +94,37 @@ export function useCanvasInteraction(
     
     const coords = getCanvasCoords(e)
 
+    const camera3DEnabled = cameraControlAllowed(e)
+
+    // Three.js Editor-style: 左=轨道, 中=平移, 右=推拉，Shift+左=滚转
+    if (camera3DEnabled) {
+      cameraDragStartX = coords.x
+      cameraDragStartY = coords.y
+      cameraStartPosX = store.project.cam_pos_x || 0
+      cameraStartPosY = store.project.cam_pos_y || 0
+      cameraStartPosZ = store.project.cam_pos_z || 0
+      cameraStartYaw = store.project.cam_yaw || 0
+      cameraStartPitch = store.project.cam_pitch || 0
+      cameraStartRoll = store.project.cam_roll || 0
+
+      if (e.button === 0 && e.shiftKey) {
+        isCameraRoll = true
+        return
+      }
+      if (e.button === 0) {
+        isCameraOrbit = true
+        return
+      }
+      if (e.button === 1) {
+        isCameraPan = true
+        return
+      }
+      if (e.button === 2) {
+        isCameraDolly = true
+        return
+      }
+    }
+
     const panoReady = store.project.pano_enable && !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
     if (panoReady) {
       panoDragStartX = coords.x
@@ -96,29 +142,6 @@ export function useCanvasInteraction(
       }
     }
 
-    const camera3DEnabled = !!(store.project.cam_enable)
-    const cameraReady = camera3DEnabled && !store.project.pano_enable && !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
-    
-    if (cameraReady) {
-      cameraDragStartX = coords.x
-      cameraDragStartY = coords.y
-      cameraStartPosX = store.project.cam_pos_x || 0
-      cameraStartPosY = store.project.cam_pos_y || 0
-      cameraStartPosZ = store.project.cam_pos_z || 0
-      panoStartYaw = store.project.cam_yaw || 0
-      panoStartPitch = store.project.cam_pitch || 0
-      
-      if (e.button === 1 || e.button === 2) {
-        isPanoOrbit = true
-        return
-      }
-      
-      if (e.button === 0 && !store.currentLayer) {
-        isCameraPan = true
-        return
-      }
-    }
-    
     if (!store.currentLayer) return
     
     if (store.extractMode.enabled) {
@@ -156,11 +179,11 @@ export function useCanvasInteraction(
   function onMouseMove(e: MouseEvent) {
     const coords = getCanvasCoords(e)
 
-    if (isPanoOrbit) {
-      const dx = coords.x - panoDragStartX
-      const dy = coords.y - panoDragStartY
-      const yaw = panoStartYaw + dx * 0.2
-      const pitch = Math.max(-89, Math.min(89, panoStartPitch + dy * 0.2))
+    if (isCameraOrbit) {
+      const dx = coords.x - cameraDragStartX
+      const dy = coords.y - cameraDragStartY
+      const yaw = cameraStartYaw + dx * 0.25
+      const pitch = Math.max(-89, Math.min(89, cameraStartPitch + dy * 0.25))
       store.setProject({ cam_yaw: yaw, cam_pitch: pitch })
       store.setProjectKeyframe?.('cam_yaw', store.currentTime, yaw)
       store.setProjectKeyframe?.('cam_pitch', store.currentTime, pitch)
@@ -171,11 +194,44 @@ export function useCanvasInteraction(
     if (isCameraPan) {
       const dx = coords.x - cameraDragStartX
       const dy = coords.y - cameraDragStartY
-      const nextX = cameraStartPosX + dx
-      const nextY = cameraStartPosY + dy
+      // Scale pan speed with distance for more natural feel
+      const panMul = 1 + Math.max(0, (cameraStartPosZ || 0) / 500)
+      const nextX = cameraStartPosX + dx * panMul
+      const nextY = cameraStartPosY + dy * panMul
       store.setProject({ cam_pos_x: nextX, cam_pos_y: nextY })
       store.setProjectKeyframe?.('cam_pos_x', store.currentTime, nextX)
       store.setProjectKeyframe?.('cam_pos_y', store.currentTime, nextY)
+      scheduleRender()
+      return
+    }
+
+    if (isCameraDolly) {
+      const dy = coords.y - cameraDragStartY
+      const dollyMul = 2
+      const nextZ = cameraStartPosZ + dy * dollyMul
+      store.setProject({ cam_pos_z: nextZ })
+      store.setProjectKeyframe?.('cam_pos_z', store.currentTime, nextZ)
+      scheduleRender()
+      return
+    }
+
+    if (isCameraRoll) {
+      const dx = coords.x - cameraDragStartX
+      const nextRoll = cameraStartRoll + dx * 0.25
+      store.setProject({ cam_roll: nextRoll })
+      store.setProjectKeyframe?.('cam_roll', store.currentTime, nextRoll)
+      scheduleRender()
+      return
+    }
+
+    if (isPanoOrbit) {
+      const dx = coords.x - panoDragStartX
+      const dy = coords.y - panoDragStartY
+      const yaw = panoStartYaw + dx * 0.2
+      const pitch = Math.max(-89, Math.min(89, panoStartPitch + dy * 0.2))
+      store.setProject({ cam_yaw: yaw, cam_pitch: pitch })
+      store.setProjectKeyframe?.('cam_yaw', store.currentTime, yaw)
+      store.setProjectKeyframe?.('cam_pitch', store.currentTime, pitch)
       scheduleRender()
       return
     }
@@ -235,10 +291,24 @@ export function useCanvasInteraction(
     isPanoOrbit = false
     isPanoPan = false
     isCameraPan = false
+    isCameraOrbit = false
+    isCameraDolly = false
+    isCameraRoll = false
   }
 
   function onWheel(e: WheelEvent) {
     const delta = e.deltaY > 0 ? -0.05 : 0.05
+
+    const camWheelDolly = cameraControlAllowed(e)
+    if (camWheelDolly) {
+      const currentZ = store.project.cam_pos_z || 0
+      const step = 8
+      const nextZ = currentZ + (delta > 0 ? step : -step)
+      store.setProject({ cam_pos_z: nextZ })
+      store.setProjectKeyframe?.('cam_pos_z', store.currentTime, nextZ)
+      scheduleRender()
+      return
+    }
     
     const isCameraWheel = store.project.pano_enable &&
       !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled &&

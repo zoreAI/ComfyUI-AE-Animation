@@ -1,4 +1,5 @@
 import { Ref } from 'vue'
+import { GPUTimelineRenderer, GPUDebugger, type CameraState } from './timeline/gpu'
 
 export interface PanoCache {
   key?: string
@@ -22,10 +23,89 @@ export function useCanvasRenderer(
   let interactionCtx: CanvasRenderingContext2D | null = null
   let renderPending = false
   
+  // GPU rendering
+  let gpuRenderer: GPUTimelineRenderer | null = null
+  let gpuContext: GPUCanvasContext | null = null
+  let gpuDebugger: GPUDebugger | null = null
+  let useGPU = false
+  
   const imageCache = new Map<string, HTMLImageElement>()
   const panoCache: PanoCache = {}
 
-  function initContexts() {
+  async function initContexts() {
+    // Check if GPU rendering should be disabled (for debugging)
+    const disableGPU = localStorage.getItem('timeline_disable_gpu') === 'true'
+    
+    // Check if experimental camera rotation should be enabled
+    const enableCameraRotation = localStorage.getItem('timeline_gpu_camera_rotation') === 'true'
+    
+    // Try to initialize WebGPU first
+    if (!disableGPU && 'gpu' in navigator && canvasRef.value) {
+      try {
+        console.log('[Timeline] Attempting WebGPU initialization...')
+        const adapter = await navigator.gpu.requestAdapter()
+        console.log('[Timeline] GPU adapter:', adapter)
+        
+        if (adapter) {
+          const device = await adapter.requestDevice()
+          console.log('[Timeline] GPU device:', device)
+          
+          const context = canvasRef.value.getContext('webgpu')
+          console.log('[Timeline] WebGPU context:', context)
+          
+          if (context) {
+            const presentationFormat = navigator.gpu.getPreferredCanvasFormat()
+            console.log('[Timeline] Presentation format:', presentationFormat)
+            
+            context.configure({
+              device,
+              format: presentationFormat,
+              alphaMode: 'premultiplied'
+            })
+            
+            // Check if advanced transforms (camera rotation) should be enabled
+            const useAdvancedTransforms = localStorage.getItem('timeline_gpu_advanced') === 'true'
+            
+            gpuRenderer = new GPUTimelineRenderer({
+              device,
+              presentationFormat,
+              width: store.project.width,
+              height: store.project.height,
+              useAdvancedTransforms
+            })
+            
+            gpuDebugger = new GPUDebugger(device, adapter)
+            gpuContext = context
+            useGPU = true
+            console.log('[Timeline] ✅ WebGPU initialized successfully')
+            console.log('[Timeline] Canvas size:', store.project.width, 'x', store.project.height)
+            
+            // Log device info in debug mode
+            if (import.meta.env.DEV) {
+              await gpuDebugger.logDeviceInfo()
+            }
+            
+            // Still initialize interaction canvas with 2D
+            if (interactionCanvasRef.value) {
+              interactionCtx = interactionCanvasRef.value.getContext('2d', {
+                alpha: true
+              })
+            }
+            return
+          }
+        }
+      } catch (error) {
+        console.warn('[Timeline] ❌ WebGPU initialization failed, falling back to Canvas 2D:', error)
+      }
+    } else if (disableGPU) {
+      console.log('[Timeline] GPU rendering disabled by user preference')
+    } else if (!('gpu' in navigator)) {
+      console.log('[Timeline] WebGPU not supported in this browser')
+    }
+    
+    // Fallback to Canvas 2D
+    console.log('[Timeline] Using Canvas 2D renderer')
+    useGPU = false
     if (canvasRef.value) {
       ctx = canvasRef.value.getContext('2d', { 
         alpha: false,
@@ -154,8 +234,67 @@ export function useCanvasRenderer(
   }
 
   function render() {
-    renderCanvas2D()
+    if (useGPU && gpuRenderer && gpuContext) {
+      renderWithGPU()
+    } else {
+      renderCanvas2D()
+    }
     renderInteractionLayer()
+  }
+
+  function renderWithGPU() {
+    if (!gpuRenderer || !gpuContext) return
+
+    // Ensure all layer images are loaded
+    let allImagesLoaded = true
+    for (const layer of store.layers) {
+      if (layer.image_data && !layer.img) {
+        const img = getCachedImage(layer)
+        if (!img) {
+          allImagesLoaded = false
+        }
+      }
+    }
+
+    // If images are still loading, fall back to Canvas 2D temporarily
+    if (!allImagesLoaded) {
+      renderCanvas2D()
+      return
+    }
+
+    // Build camera state with interpolated values
+    const cameraEnabled = !!store.project.cam_enable && !store.project.pano_enable
+    const camera: CameraState = {
+      enabled: cameraEnabled,
+      position: {
+        x: store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0),
+        y: store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0),
+        z: store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)
+      },
+      offset: {
+        x: store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0),
+        y: store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+      },
+      rotation: {
+        yaw: store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0),
+        pitch: store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0),
+        roll: store.interpolateProjectValue?.('cam_roll', store.currentTime, store.project.cam_roll || 0) ?? (store.project.cam_roll || 0)
+      },
+      fov: store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov || 90) ?? (store.project.cam_fov || 90),
+      panorama: !!store.project.pano_enable
+    }
+    
+
+
+    try {
+      const targetView = gpuContext.getCurrentTexture().createView()
+      gpuRenderer.renderFrame(store.layers, store.currentTime, camera, targetView)
+    } catch (error) {
+      console.error('[Timeline] GPU rendering error:', error)
+      // Fall back to Canvas 2D on error
+      useGPU = false
+      renderCanvas2D()
+    }
   }
 
   function renderCanvas2D() {
@@ -164,25 +303,23 @@ export function useCanvasRenderer(
     ctx.fillStyle = '#000'
     ctx.fillRect(0, 0, store.project.width, store.project.height)
 
+    // 获取摄像机偏移（用于所有图层）
+    const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
+    const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
+    
+    const panoEnabled = !!store.project.pano_enable
     const cameraEnabled = !!store.project.cam_enable
-    const baseCamOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
-    const baseCamOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
-    const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)
-    const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)
-    const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)
 
-    const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
-    const camOffsetX = cameraEnabled ? baseCamOffsetX + camPosX : baseCamOffsetX
-    const camOffsetY = cameraEnabled ? baseCamOffsetY + camPosY : baseCamOffsetY
-
+    // 渲染背景图层
     const bgLayer = store.layers.find((l: any) => l.type === 'background')
     if (bgLayer && ctx) {
-      drawBackgroundLayer(ctx, bgLayer, camOffsetX, camOffsetY, cameraScale, cameraEnabled)
+      drawBackgroundLayer(ctx, bgLayer, camOffsetX, camOffsetY, 1, cameraEnabled)
     }
 
+    // 渲染前景图层
     if (ctx) {
       store.layers.filter((l: any) => l.type !== 'background').forEach((layer: any) => {
-        drawForegroundLayer(ctx!, layer, camOffsetX, camOffsetY, cameraEnabled, cameraScale)
+        drawForegroundLayer(ctx!, layer, camOffsetX, camOffsetY, cameraEnabled, 1)
       })
     }
     
@@ -250,7 +387,8 @@ export function useCanvasRenderer(
     if (!img || img.width === 0 || img.height === 0) return
 
     const props = getLayerProps(layer)
-    const panoEnabled = store.project.pano_enable
+    // pano 显示只依赖开关，不再强制 cameraActive
+    const panoEnabled = !!store.project.pano_enable
 
     ctx.save()
     ctx.globalAlpha = props.opacity
@@ -261,7 +399,7 @@ export function useCanvasRenderer(
     const imgW = img.width
     const imgH = img.height
     let baseScale = 1
-    const isPanoCompatible = panoEnabled && imgW > 0 && imgH > 0 && Math.abs(imgW / imgH - 2.0) < 0.35
+    const isPanoCompatible = panoEnabled && imgW > 0 && imgH > 0
 
     if (isPanoCompatible) {
       const yaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)
@@ -295,14 +433,12 @@ export function useCanvasRenderer(
 
         const aspect = canvasW / Math.max(1, canvasH)
         const tanHalfFov = Math.tan((fov * deg2rad) / 2)
-        const cy = Math.cos(yaw * deg2rad), sy = Math.sin(yaw * deg2rad)
-        const cp = Math.cos(pitch * deg2rad), sp = Math.sin(pitch * deg2rad)
-        const cr = Math.cos(roll * deg2rad), sr = Math.sin(roll * deg2rad)
-        const R = [
-          cr * cy + sr * sp * sy,  sr * cp,  cr * -sy + sr * sp * cy,
-          -sr * cy + cr * sp * sy, cr * cp,  -sr * -sy + cr * sp * cy,
-          cp * sy,                -sp,       cp * cy
-        ]
+        const yawRad = yaw * deg2rad
+        const pitchRad = pitch * deg2rad
+        const rollRad = roll * deg2rad
+        const cy = Math.cos(yawRad), sy = Math.sin(yawRad)
+        const cp = Math.cos(pitchRad), sp = Math.sin(pitchRad)
+        const cr = Math.cos(rollRad), sr = Math.sin(rollRad)
 
         const mapX = new Float32Array(prevW * prevH)
         const mapY = new Float32Array(prevW * prevH)
@@ -315,13 +451,25 @@ export function useCanvasRenderer(
             let vz = 1
             const invLen = 1 / Math.hypot(vx, vy, vz)
             vx *= invLen; vy *= invLen; vz *= invLen
-            const rx = R[0] * vx + R[1] * vy + R[2] * vz
-            const ry = R[3] * vx + R[4] * vy + R[5] * vz
-            const rz = R[6] * vx + R[7] * vy + R[8] * vz
-            const lon = Math.atan2(rx, rz)
-            const lat = Math.asin(Math.max(-1, Math.min(1, ry)))
+
+            // Apply yaw (Y), then pitch (X), then roll (Z)
+            // Yaw
+            let tx = cy * vx + sy * vz
+            let tz = -sy * vx + cy * vz
+            vx = tx; vz = tz
+            // Pitch
+            let ty = cp * vy - sp * vz
+            tz = sp * vy + cp * vz
+            vy = ty; vz = tz
+            // Roll
+            tx = cr * vx - sr * vy
+            ty = sr * vx + cr * vy
+            vx = tx; vy = ty
+
+            const lon = Math.atan2(vx, vz)
+            const lat = Math.asin(Math.max(-1, Math.min(1, vy)))
             const u = ((lon / (Math.PI * 2)) + 0.5) * imgW
-            const v = ((-lat / Math.PI) + 0.5) * imgH
+            const v = ((0.5 - (lat / Math.PI))) * imgH
             let ui = Math.floor(u) % imgW; if (ui < 0) ui += imgW
             let vi = Math.floor(v); vi = Math.max(0, Math.min(imgH - 1, vi))
             const idx = yPix * prevW + xPix
@@ -365,12 +513,13 @@ export function useCanvasRenderer(
           data[di + 3] = 255
         }
         pCtx.putImageData(dstImage, 0, 0)
-        ctx.translate(canvasW / 2 + camOffsetX * cameraScale, canvasH / 2 + camOffsetY * cameraScale)
-        ctx.scale(cameraScale, cameraScale)
-        ctx.drawImage(pCanvas, -canvasW / 2, -canvasH / 2, canvasW, canvasH)
+        // pano直接绘制到画布，填满整个画布
+        ctx.drawImage(pCanvas, 0, 0, canvasW, canvasH)
+        ctx.restore()
+        return // pano渲染完成，直接返回
       } else {
         ctx.restore()
-        return drawBackgroundLayer(ctx, { ...layer, panoFallback: true, type: layer.type, bg_mode: layer.bg_mode }, camOffsetX, camOffsetY, cameraScale, cameraActive)
+        return drawBackgroundLayer(ctx, { ...layer, panoFallback: true, type: layer.type, bg_mode: layer.bg_mode }, camOffsetX, camOffsetY, 1, false)
       }
     } else {
       if (imgW > 0 && imgH > 0) {
@@ -385,28 +534,18 @@ export function useCanvasRenderer(
 
       if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
 
-      const camYaw = cameraActive ? (store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)) : 0
-      const camPitch = cameraActive ? (store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)) : 0
-      
-      const depthMul = 1 / Math.max(0.1, 1 + (props.z || 0) * 0.001)
-      const camMul = cameraActive ? cameraScale : 1
-      const camX = cameraActive ? camOffsetX : 0
-      const camY = cameraActive ? camOffsetY : 0
-      const parallax = cameraActive ? depthMul : 1
-      
+      // 简化的背景图层渲染
       let bgX = props.x
       let bgY = props.y
-      if (cameraActive && (camYaw !== 0 || camPitch !== 0)) {
-        const yawRad = camYaw * Math.PI / 180
-        const pitchRad = camPitch * Math.PI / 180
-        const bgZ = props.z || 0
-        bgX -= Math.tan(yawRad) * (bgZ + 1000) * 0.3
-        bgY -= Math.tan(pitchRad) * (bgZ + 1000) * 0.3
-      }
+      const bgZ = props.z || 0
       
-      const translateX = canvasW / 2 + (bgX + camX * parallax) * camMul
-      const translateY = canvasH / 2 + (bgY + camY * parallax) * camMul
-      const finalScale = (props.scale || 1) * baseScale * camMul * depthMul
+      // Z深度产生的缩放效果
+      const depthScale = 1 / Math.max(0.1, 1 + bgZ * 0.001)
+      
+      // 最终位置和缩放
+      const translateX = canvasW / 2 + bgX + camOffsetX
+      const translateY = canvasH / 2 + bgY + camOffsetY
+      const finalScale = (props.scale || 1) * baseScale * depthScale
       
       if (!Number.isFinite(translateX) || !Number.isFinite(translateY) || !Number.isFinite(finalScale) || finalScale <= 0) {
         ctx.restore()
@@ -414,7 +553,10 @@ export function useCanvasRenderer(
       }
       
       ctx.translate(translateX, translateY)
-      ctx.rotate(((props.rotation || 0) * Math.PI) / 180)
+      
+      // 使用rotationZ（如果存在）或rotation
+      const actualRotation = props.rotationZ !== undefined && props.rotationZ !== 0 ? props.rotationZ : props.rotation
+      ctx.rotate(((actualRotation || 0) * Math.PI) / 180)
       ctx.scale(finalScale, finalScale)
 
       ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
@@ -434,27 +576,37 @@ export function useCanvasRenderer(
 
     ctx.save()
     
-    const camYaw = cameraActive ? (store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)) : 0
-    const camPitch = cameraActive ? (store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)) : 0
-    
-    const depthMul = 1 / Math.max(0.1, 1 + (props.z || 0) * 0.001)
-    const camMul = cameraActive ? cameraScale : 1
-    const camX = cameraActive ? camOffsetX : 0
-    const camY = cameraActive ? camOffsetY : 0
-    const parallax = cameraActive ? depthMul : 1
+    const panoActive = !!store.project.pano_enable
     
     let layerX = props.x
     let layerY = props.y
-    if (cameraActive && (camYaw !== 0 || camPitch !== 0)) {
-      const yawRad = camYaw * Math.PI / 180
-      const pitchRad = camPitch * Math.PI / 180
-      const layerZ = props.z || 0
-      layerX -= Math.tan(yawRad) * (layerZ + 500) * 0.5
-      layerY -= Math.tan(pitchRad) * (layerZ + 500) * 0.5
+    const layerZ = props.z || 0
+    
+    // 前景图层跟随摄像机旋转（pano模式和普通摄像机模式都需要）
+    // pano模式下：背景全景图在旋转，前景也需要跟随移动
+    // 普通摄像机模式下：摄像机旋转时前景也需要跟随
+    if (cameraActive || panoActive) {
+      const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
+      const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
+      const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+      
+      if (camYaw !== 0 || camPitch !== 0) {
+        const yawRad = camYaw * Math.PI / 180
+        const pitchRad = camPitch * Math.PI / 180
+        // 使用FOV来计算移动量，使前景移动与pano背景同步
+        const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
+        const moveScale = store.project.width / (2 * fovFactor)
+        layerX -= Math.tan(yawRad) * moveScale
+        layerY -= Math.tan(pitchRad) * moveScale
+      }
     }
     
-    const translateX = store.project.width / 2 + (layerX + camX * parallax) * camMul
-    const translateY = store.project.height / 2 + (layerY + camY * parallax) * camMul
+    // Z深度产生的缩放效果
+    const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+    
+    // 最终位置：图层位置 + 摄像机偏移
+    const translateX = store.project.width / 2 + layerX + camOffsetX
+    const translateY = store.project.height / 2 + layerY + camOffsetY
     
     if (!Number.isFinite(translateX) || !Number.isFinite(translateY)) {
       ctx.restore()
@@ -463,27 +615,23 @@ export function useCanvasRenderer(
     
     ctx.translate(translateX, translateY)
     
+    // 3D旋转效果（rotationX/rotationY）- Canvas 2D只能近似模拟
     if (props.rotationX !== 0 || props.rotationY !== 0) {
-      const perspective = props.perspective || 1000
       const rx = props.rotationX * Math.PI / 180
       const ry = props.rotationY * Math.PI / 180
       
       const cosX = Math.cos(rx)
-      const sinX = Math.sin(rx)
       const cosY = Math.cos(ry)
-      const sinY = Math.sin(ry)
       
-      const zScale = 1 / (1 + (sinY * w / 2 + sinX * h / 2) / perspective)
-      
-      ctx.transform(
-        cosY * zScale, sinX * sinY * zScale,
-        0, cosX * zScale,
-        0, 0
-      )
+      // 简化的2D近似：只应用水平和垂直缩放来模拟3D旋转
+      // rotationY影响水平缩放，rotationX影响垂直缩放
+      ctx.scale(cosY, cosX)
     }
     
-    ctx.rotate((props.rotation * Math.PI) / 180)
-    const scaleApplied = props.scale * camMul * depthMul
+    // 使用rotationZ（如果存在）或rotation
+    const actualRotation = props.rotationZ !== undefined && props.rotationZ !== 0 ? props.rotationZ : props.rotation
+    ctx.rotate((actualRotation * Math.PI) / 180)
+    const scaleApplied = props.scale * depthScale
     ctx.scale(scaleApplied, scaleApplied)
     ctx.globalAlpha = props.opacity
 
@@ -681,22 +829,18 @@ export function useCanvasRenderer(
     const centerX = canvasW / 2
     const centerY = canvasH / 2
     
-    const cameraEnabled = !!store.project.cam_enable
-    const camPosX = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)) : 0
-    const camPosY = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)) : 0
-    const camPosZ = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)) : 0
-    const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
-    const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
+    // 获取摄像机偏移
+    const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
+    const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
     
-    const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
     const layerZ = props.z || 0
-    const depthMul = 1 / Math.max(0.1, 1 + layerZ * 0.001)
-    const parallax = cameraEnabled ? depthMul : 1
-    const camMul = cameraEnabled ? cameraScale : 1
+    // Z轴深度效果
+    const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
     
-    const finalX = (props.x + (camOffsetX + camPosX) * parallax) * camMul
-    const finalY = (props.y + (camOffsetY + camPosY) * parallax) * camMul
-    const finalScale = props.scale * camMul * depthMul
+    // 与前景图层渲染一致的位置计算
+    const finalX = props.x + camOffsetX
+    const finalY = props.y + camOffsetY
+    const finalScale = props.scale * depthScale
     
     iCtx.save()
     iCtx.globalAlpha = 0.5
@@ -727,37 +871,39 @@ export function useCanvasRenderer(
     const centerX = canvasW / 2
     const centerY = canvasH / 2
     
-    const cameraEnabled = !!store.project.cam_enable
-    const baseCamOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x || 0) ?? (store.project.cam_offset_x || 0)
-    const baseCamOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y || 0) ?? (store.project.cam_offset_y || 0)
-    const camPosX = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x || 0) ?? (store.project.cam_pos_x || 0)) : 0
-    const camPosY = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y || 0) ?? (store.project.cam_pos_y || 0)) : 0
-    const camPosZ = cameraEnabled ? (store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z || 0) ?? (store.project.cam_pos_z || 0)) : 0
-    const camYaw = cameraEnabled ? (store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw || 0) ?? (store.project.cam_yaw || 0)) : 0
-    const camPitch = cameraEnabled ? (store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch || 0) ?? (store.project.cam_pitch || 0)) : 0
-    
-    const cameraScale = cameraEnabled ? Math.max(0.2, Math.min(4, 1 / (1 + camPosZ * 0.001))) : 1
-    const camOffsetX = cameraEnabled ? baseCamOffsetX + camPosX : baseCamOffsetX
-    const camOffsetY = cameraEnabled ? baseCamOffsetY + camPosY : baseCamOffsetY
+    // 获取摄像机参数
+    const cameraActive = !!store.project.cam_enable
+    const panoActive = !!store.project.pano_enable
+    const camOffsetX = store.interpolateProjectValue?.('cam_offset_x', store.currentTime, store.project.cam_offset_x ?? 0) ?? (store.project.cam_offset_x ?? 0)
+    const camOffsetY = store.interpolateProjectValue?.('cam_offset_y', store.currentTime, store.project.cam_offset_y ?? 0) ?? (store.project.cam_offset_y ?? 0)
     
     const layerZ = props.z || 0
-    const depthMul = 1 / Math.max(0.1, 1 + layerZ * 0.001)
-    const parallax = cameraEnabled ? depthMul : 1
-    const camMul = cameraEnabled ? cameraScale : 1
+    // Z轴深度效果
+    const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
     
+    // 与前景图层渲染一致的位置计算
     let layerX = props.x
     let layerY = props.y
-    if (cameraEnabled && (camYaw !== 0 || camPitch !== 0)) {
-      const yawRad = camYaw * Math.PI / 180
-      const pitchRad = camPitch * Math.PI / 180
-      const zOffset = layer.type === 'background' ? (layerZ + 1000) * 0.3 : (layerZ + 500) * 0.5
-      layerX -= Math.tan(yawRad) * zOffset
-      layerY -= Math.tan(pitchRad) * zOffset
+    
+    // 前景图层跟随摄像机旋转（与drawForegroundLayer保持一致）
+    if ((cameraActive || panoActive) && layer.type !== 'background') {
+      const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
+      const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
+      const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+      
+      if (camYaw !== 0 || camPitch !== 0) {
+        const yawRad = camYaw * Math.PI / 180
+        const pitchRad = camPitch * Math.PI / 180
+        const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
+        const moveScale = canvasW / (2 * fovFactor)
+        layerX -= Math.tan(yawRad) * moveScale
+        layerY -= Math.tan(pitchRad) * moveScale
+      }
     }
     
-    let finalX = (layerX + camOffsetX * parallax) * camMul
-    let finalY = (layerY + camOffsetY * parallax) * camMul
-    let finalScale = props.scale * camMul * depthMul
+    let finalX = layerX + camOffsetX
+    let finalY = layerY + camOffsetY
+    let finalScale = props.scale * depthScale
     
     if (layer.type === 'background' && imgW > 0 && imgH > 0) {
       const mode = layer.bg_mode || 'fit'
@@ -765,7 +911,7 @@ export function useCanvasRenderer(
       if (mode === 'fit') baseScale = Math.min(canvasW / imgW, canvasH / imgH)
       else if (mode === 'fill') baseScale = Math.max(canvasW / imgW, canvasH / imgH)
       else baseScale = Math.min(canvasW / imgW, canvasH / imgH)
-      finalScale = props.scale * baseScale * camMul * depthMul
+      finalScale = props.scale * baseScale * depthScale
     }
     
     if (!Number.isFinite(finalScale) || finalScale <= 0) finalScale = 1
@@ -792,6 +938,21 @@ export function useCanvasRenderer(
 
   function cleanup() {
     imageCache.clear()
+    if (gpuRenderer) {
+      gpuRenderer.cleanup()
+      gpuRenderer = null
+    }
+    gpuContext = null
+  }
+
+  function toggleGPU(enable: boolean) {
+    if (enable) {
+      localStorage.removeItem('timeline_disable_gpu')
+      console.log('[Timeline] GPU rendering will be enabled on next reload')
+    } else {
+      localStorage.setItem('timeline_disable_gpu', 'true')
+      console.log('[Timeline] GPU rendering will be disabled on next reload')
+    }
   }
 
   return {
@@ -803,6 +964,11 @@ export function useCanvasRenderer(
     setDrawExtractOverlayOnCtx,
     cleanup,
     panoCache,
-    imageCache
+    imageCache,
+    isUsingGPU: () => useGPU,
+    toggleGPU,
+    getGPUStats: () => gpuRenderer?.getCacheStats() || null,
+    getPerformanceStats: () => gpuRenderer?.getPerformanceStats() || null,
+    resetPerformanceStats: () => gpuRenderer?.resetPerformanceStats()
   }
 }
