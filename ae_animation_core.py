@@ -137,19 +137,23 @@ class Transform3D:
 
 def _parse_layers(layers_json: str) -> Dict[str, Any]:
     if not layers_json:
-        return {"layers": [], "project_keyframes": {}}
+        return {"layers": [], "project_keyframes": {}, "project": {}}
     try:
         data = json.loads(layers_json)
         if isinstance(data, list):
-            return {"layers": data, "project_keyframes": {}}
+            return {"layers": data, "project_keyframes": {}, "project": {}}
         if isinstance(data, dict):
+            project = data.get("project") or {}
+            # project_keyframes 可能在 project 内部或顶层
+            project_kf = project.get("project_keyframes") or data.get("project_keyframes") or {}
             return {
                 "layers": data.get("layers") or [],
-                "project_keyframes": data.get("project_keyframes") or {}
+                "project_keyframes": project_kf,
+                "project": project
             }
     except Exception:
         logging.warning("[AE] Failed to parse layers_keyframes JSON")
-    return {"layers": [], "project_keyframes": {}}
+    return {"layers": [], "project_keyframes": {}, "project": {}}
 
 
 class AEAnimation(io.ComfyNode):
@@ -444,10 +448,23 @@ class AEAnimation(io.ComfyNode):
         parsed = _parse_layers(layers_keyframes)
         layers_data = parsed["layers"]
         project_kf = parsed["project_keyframes"]
+        project_data = parsed.get("project", {})
 
         duration = total_frames / max(fps, 1)
-        pano_enabled = bool(pano_enable)
-        camera_active = bool(cam_enable) or pano_enabled
+        
+        # 优先使用 project_data 中的设置（来自 layers_keyframes JSON），如果没有则使用节点 widget 的值
+        pano_enable_final = bool(project_data.get("pano_enable")) if project_data.get("pano_enable") is not None else bool(pano_enable)
+        cam_enable_final = bool(project_data.get("cam_enable")) if project_data.get("cam_enable") is not None else bool(cam_enable)
+        cam_yaw_final = float(project_data.get("cam_yaw", cam_yaw) or 0)
+        cam_pitch_final = float(project_data.get("cam_pitch", cam_pitch) or 0)
+        cam_roll_final = float(project_data.get("cam_roll", cam_roll) or 0)
+        cam_fov_final = float(project_data.get("cam_fov", cam_fov) or 90)
+        cam_pos_x_final = float(project_data.get("cam_pos_x", cam_pos_x) or 0)
+        cam_pos_y_final = float(project_data.get("cam_pos_y", cam_pos_y) or 0)
+        cam_pos_z_final = float(project_data.get("cam_pos_z", cam_pos_z) or 1000)
+        
+        pano_enabled = bool(pano_enable_final)
+        camera_active = bool(cam_enable_final) or pano_enabled
         aspect = width / max(1, height)
 
         if end_frame == -1 or end_frame > total_frames:
@@ -455,6 +472,7 @@ class AEAnimation(io.ComfyNode):
 
         layers = cls._decode_layers(layers_data)
         print(f"[AE] Render: {width}x{height}, frames {start_frame}-{end_frame}/{total_frames}, {len(layers)} layers")
+        print(f"[AE] Camera: pano_enabled={pano_enabled}, camera_active={camera_active}, yaw={cam_yaw_final}, pitch={cam_pitch_final}, fov={cam_fov_final}")
 
         def interp_kf(prop: str, default: float, t: float) -> float:
             arr = project_kf.get(prop) if isinstance(project_kf, dict) else None
@@ -482,14 +500,14 @@ class AEAnimation(io.ComfyNode):
         for frame_idx in range(start_frame, end_frame):
             time = frame_idx / max(fps, 1)
 
-            # Camera parameters
-            cam_yaw_t = interp_kf("cam_yaw", cam_yaw, time)
-            cam_pitch_t = interp_kf("cam_pitch", cam_pitch, time)
-            cam_roll_t = interp_kf("cam_roll", cam_roll, time)
-            cam_fov_t = interp_kf("cam_fov", cam_fov, time)
-            cam_pos_x_t = interp_kf("cam_pos_x", cam_pos_x, time)
-            cam_pos_y_t = interp_kf("cam_pos_y", cam_pos_y, time)
-            cam_pos_z_t = interp_kf("cam_pos_z", cam_pos_z, time)
+            # Camera parameters (使用 _final 变量作为默认值)
+            cam_yaw_t = interp_kf("cam_yaw", cam_yaw_final, time)
+            cam_pitch_t = interp_kf("cam_pitch", cam_pitch_final, time)
+            cam_roll_t = interp_kf("cam_roll", cam_roll_final, time)
+            cam_fov_t = interp_kf("cam_fov", cam_fov_final, time)
+            cam_pos_x_t = interp_kf("cam_pos_x", cam_pos_x_final, time)
+            cam_pos_y_t = interp_kf("cam_pos_y", cam_pos_y_final, time)
+            cam_pos_z_t = interp_kf("cam_pos_z", cam_pos_z_final, time)
 
             # Build camera matrices
             view_matrix = Transform3D.build_view_matrix(cam_pos_x_t, cam_pos_y_t, cam_pos_z_t, cam_yaw_t, cam_pitch_t, cam_roll_t)
@@ -583,9 +601,22 @@ class AEAnimation(io.ComfyNode):
                     img_np = cv2.remap(img_np, pano_cache[0], pano_cache[1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
                     cls._render_layer_2d(img_np, 0, 0, 1.0, 0, canvas, mask_canvas, opacity, is_foreground, width, height, "fit")
                 elif pano_enabled and is_foreground:
-                    # Pano模式下前景图层使用2D渲染（不受摄像机3D变换影响）
+                    # Pano模式下前景图层使用2D渲染，但需要跟随摄像机旋转
+                    fg_x = data["x"]
+                    fg_y = data["y"]
+                    
+                    # 根据摄像机 yaw/pitch 计算前景偏移（与前端逻辑一致）
+                    if cam_yaw_t != 0 or cam_pitch_t != 0:
+                        yaw_rad = np.deg2rad(cam_yaw_t)
+                        pitch_rad = np.deg2rad(cam_pitch_t)
+                        fov_rad = np.deg2rad(max(1.0, min(179.0, cam_fov_t)))
+                        fov_factor = np.tan(fov_rad / 2)
+                        move_scale = width / (2 * fov_factor)
+                        fg_x -= np.tan(yaw_rad) * move_scale
+                        fg_y -= np.tan(pitch_rad) * move_scale
+                    
                     cls._render_layer_2d(
-                        img_np, data["x"], data["y"], data["scale_2d"], data["rotation_2d"],
+                        img_np, fg_x, fg_y, data["scale_2d"], data["rotation_2d"],
                         canvas, mask_canvas, opacity, is_foreground, width, height, "fit"
                     )
                 elif is_3d or camera_active:
