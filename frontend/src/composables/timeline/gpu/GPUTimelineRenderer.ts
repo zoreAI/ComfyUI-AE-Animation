@@ -136,6 +136,9 @@ export class GPUTimelineRenderer {
   private uniformsDirty: boolean = true
   private lastCameraState: CameraState | null = null
   private lastLayerProps: Map<string, LayerProps> = new Map()
+  
+  // Current frame duration for path animation
+  private currentDuration: number = 5
 
   constructor(config: GPUTimelineRendererConfig) {
     this.device = config.device
@@ -509,8 +512,11 @@ export class GPUTimelineRenderer {
     layers: Layer[],
     time: number,
     camera: CameraState,
-    targetView: GPUTextureView
+    targetView: GPUTextureView,
+    duration: number = 5
   ): void {
+    // Store duration for use in getLayerProps
+    this.currentDuration = duration
     this.performanceMonitor.startFrame()
 
     if (!this.backgroundPipeline || !this.foregroundPipeline) {
@@ -719,7 +725,7 @@ export class GPUTimelineRenderer {
       const pathPos = this.interpolateBezierPath(
         layer.bezierPath,
         time,
-        2 // duration - should come from project
+        this.currentDuration
       )
       if (pathPos) {
         x = pathPos.x

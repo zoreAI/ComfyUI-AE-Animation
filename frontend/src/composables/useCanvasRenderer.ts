@@ -293,7 +293,7 @@ export function useCanvasRenderer(
       gpuRenderer.resizeRenderTargets(projW, projH)
       
       const targetView = gpuContext.getCurrentTexture().createView()
-      gpuRenderer.renderFrame(store.layers, store.currentTime, camera, targetView)
+      gpuRenderer.renderFrame(store.layers, store.currentTime, camera, targetView, store.project.duration)
     } catch (error) {
       console.error('[Timeline] GPU rendering error:', error)
       // Fall back to Canvas 2D on error

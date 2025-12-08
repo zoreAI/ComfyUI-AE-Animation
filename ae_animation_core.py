@@ -254,6 +254,7 @@ class AEAnimation(io.ComfyNode):
                     "bg_mode": layer.get("bg_mode", "fit"),
                     "customMask": layer.get("customMask"),
                     "bezierPath": layer.get("bezierPath"),
+                    "usePathAnimation": layer.get("usePathAnimation", False),
                     # Position
                     "x": layer.get("x", 0),
                     "y": layer.get("y", 0),
@@ -511,9 +512,10 @@ class AEAnimation(io.ComfyNode):
                 y = cls._get_value(kf, "y", time, layer["y"])
                 z = cls._get_value(kf, "z", time, layer["z"])
 
-                # Bezier path override
+                # Bezier path override (only if usePathAnimation is enabled)
+                use_path_animation = layer.get("usePathAnimation", False)
                 bezier_path = layer.get("bezierPath")
-                if bezier_path and len(bezier_path) >= 2:
+                if use_path_animation and bezier_path and len(bezier_path) >= 2:
                     pos = cls._calculate_bezier_pos(bezier_path, time, duration)
                     if pos:
                         x, y = pos
