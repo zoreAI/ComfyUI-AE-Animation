@@ -105,6 +105,8 @@ class Transform3D:
         Returns 4x2 array of corner positions: [top-left, top-right, bottom-right, bottom-left]
         """
         hw, hh = img_w / 2, img_h / 2
+        # 使用标准3D坐标系（Y向上）
+        # top = -hh (在屏幕上方), bottom = +hh (在屏幕下方)
         corners = np.array([
             [-hw, -hh, 0, 1],  # top-left
             [hw, -hh, 0, 1],   # top-right
@@ -119,9 +121,11 @@ class Transform3D:
         ndc = projected[:, :2] / w
 
         # NDC to screen coordinates
+        # 标准NDC: Y向上，范围[-1,1]
+        # 屏幕坐标: Y向下，范围[0,height]
         screen = np.zeros((4, 2))
         screen[:, 0] = (ndc[:, 0] + 1) * 0.5 * screen_w
-        screen[:, 1] = (1 - ndc[:, 1]) * 0.5 * screen_h  # Flip Y
+        screen[:, 1] = (1 - ndc[:, 1]) * 0.5 * screen_h  # Flip Y for screen coords
         return screen.astype(np.float32)
 
     @staticmethod
@@ -791,8 +795,8 @@ class AEAnimation(io.ComfyNode):
                             img_np, fg_x, fg_y, data["scale_2d"], data["rotation_2d"],
                             canvas, mask_canvas, opacity, is_foreground, width, height, "fit"
                         )
-                elif is_3d or camera_active:
-                    # 3D rendering with perspective
+                elif is_3d:
+                    # 真正的3D图层使用完整的MVP矩阵变换
                     model_matrix = Transform3D.build_model_matrix(
                         data["x"], data["y"], data["z"],
                         data["rot_x"], data["rot_y"], data["rot_z"],
@@ -801,6 +805,40 @@ class AEAnimation(io.ComfyNode):
                     )
                     mvp = vp_matrix @ model_matrix
                     cls._render_layer_3d(img_np, mvp, canvas, mask_canvas, opacity, is_foreground, width, height)
+                elif camera_active:
+                    # camera-only模式：使用与前端一致的简单变换
+                    # 摄像机位置影响图层偏移（反向）
+                    layer_x = data["x"] - cam_pos_x_t
+                    layer_y = data["y"] - cam_pos_y_t
+                    
+                    # 摄像机旋转影响图层位置
+                    if cam_yaw_t != 0 or cam_pitch_t != 0:
+                        yaw_rad = np.deg2rad(cam_yaw_t)
+                        pitch_rad = np.deg2rad(cam_pitch_t)
+                        fov_rad = np.deg2rad(max(1.0, min(179.0, cam_fov_t)))
+                        fov_factor = np.tan(fov_rad / 2)
+                        move_scale = width / (2 * fov_factor)
+                        layer_x += np.tan(yaw_rad) * move_scale
+                        layer_y += np.tan(pitch_rad) * move_scale
+                    
+                    # 摄像机Z轴产生的缩放效果
+                    camera_z_scale = max(0.1, min(10, 1000 / max(100, cam_pos_z_t)))
+                    final_scale = data["scale_2d"] * camera_z_scale
+                    
+                    # 检查是否有3D旋转
+                    has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
+                    if has_3d_rotation:
+                        cls._render_layer_2d_with_3d_rotation(
+                            img_np, layer_x, layer_y, final_scale,
+                            data["rot_x"], data["rot_y"], data["rot_z"],
+                            canvas, mask_canvas, opacity, is_foreground, width, height,
+                            perspective=1000.0, bg_mode=layer["bg_mode"]
+                        )
+                    else:
+                        cls._render_layer_2d(
+                            img_np, layer_x, layer_y, final_scale, data["rotation_2d"],
+                            canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"]
+                        )
                 else:
                     # 2D rendering - check if has 3D rotation
                     has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
