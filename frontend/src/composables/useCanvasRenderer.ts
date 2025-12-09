@@ -539,18 +539,50 @@ export function useCanvasRenderer(
 
       if (!Number.isFinite(baseScale) || baseScale <= 0) baseScale = 1
 
-      // 简化的背景图层渲染
+      // 背景图层渲染
       let bgX = props.x
       let bgY = props.y
       const bgZ = props.z || 0
       
+      // 只开camera模式（非pano）下，背景也需要响应摄像机
+      const cameraOnlyMode = cameraActive && !panoEnabled
+      if (cameraOnlyMode) {
+        const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
+        const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
+        const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+        const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
+        const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
+        const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 0) ?? (store.project.cam_pos_z ?? 0)
+        
+        // 摄像机位置影响背景偏移（反向）
+        bgX -= camPosX
+        bgY -= camPosY
+        
+        // 摄像机旋转影响背景位置
+        if (camYaw !== 0 || camPitch !== 0) {
+          const yawRad = camYaw * Math.PI / 180
+          const pitchRad = camPitch * Math.PI / 180
+          const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
+          const moveScale = canvasW / (2 * fovFactor)
+          bgX += Math.tan(yawRad) * moveScale
+          bgY += Math.tan(pitchRad) * moveScale
+        }
+      }
+      
       // Z深度产生的缩放效果
       const depthScale = 1 / Math.max(0.1, 1 + bgZ * 0.001)
+      
+      // 摄像机Z轴产生的缩放效果（推拉）
+      let cameraZScale = 1
+      if (cameraOnlyMode) {
+        const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
+        cameraZScale = Math.max(0.1, Math.min(10, 1000 / Math.max(100, camPosZ)))
+      }
       
       // 最终位置和缩放
       const translateX = canvasW / 2 + bgX + camOffsetX
       const translateY = canvasH / 2 + bgY + camOffsetY
-      const finalScale = (props.scale || 1) * baseScale * depthScale
+      const finalScale = (props.scale || 1) * baseScale * depthScale * cameraZScale
       
       if (!Number.isFinite(translateX) || !Number.isFinite(translateY) || !Number.isFinite(finalScale) || finalScale <= 0) {
         ctx.restore()
@@ -559,9 +591,18 @@ export function useCanvasRenderer(
       
       ctx.translate(translateX, translateY)
       
-      // 使用rotationZ（如果存在）或rotation
-      const actualRotation = props.rotationZ !== undefined && props.rotationZ !== 0 ? props.rotationZ : props.rotation
-      ctx.rotate(((actualRotation || 0) * Math.PI) / 180)
+      // 3D旋转效果（rotationX/rotationY）- Canvas 2D只能近似模拟
+      if (props.rotationX !== 0 || props.rotationY !== 0) {
+        const rx = (props.rotationX || 0) * Math.PI / 180
+        const ry = (props.rotationY || 0) * Math.PI / 180
+        const cosX = Math.cos(rx)
+        const cosY = Math.cos(ry)
+        ctx.scale(cosY, cosX)
+      }
+      
+      // 使用rotationZ（如果有值）或rotation
+      const actualRotation = props.rotationZ || props.rotation || 0
+      ctx.rotate((actualRotation * Math.PI) / 180)
       ctx.scale(finalScale, finalScale)
 
       ctx.drawImage(img, -imgW / 2, -imgH / 2, imgW, imgH)
@@ -587,27 +628,47 @@ export function useCanvasRenderer(
     let layerY = props.y
     const layerZ = props.z || 0
     
-    // 前景图层跟随摄像机旋转（pano模式和普通摄像机模式都需要）
-    // pano模式下：背景全景图在旋转，前景也需要跟随移动
-    // 普通摄像机模式下：摄像机旋转时前景也需要跟随
+    // 前景图层跟随摄像机（pano模式和普通摄像机模式都需要）
     if (cameraActive || panoActive) {
       const camYaw = store.interpolateProjectValue?.('cam_yaw', store.currentTime, store.project.cam_yaw ?? 0) ?? (store.project.cam_yaw ?? 0)
       const camPitch = store.interpolateProjectValue?.('cam_pitch', store.currentTime, store.project.cam_pitch ?? 0) ?? (store.project.cam_pitch ?? 0)
       const camFov = store.interpolateProjectValue?.('cam_fov', store.currentTime, store.project.cam_fov ?? 90) ?? (store.project.cam_fov ?? 90)
+      const camPosX = store.interpolateProjectValue?.('cam_pos_x', store.currentTime, store.project.cam_pos_x ?? 0) ?? (store.project.cam_pos_x ?? 0)
+      const camPosY = store.interpolateProjectValue?.('cam_pos_y', store.currentTime, store.project.cam_pos_y ?? 0) ?? (store.project.cam_pos_y ?? 0)
       
+      // 摄像机位置影响前景偏移（反向，与背景一致）- 仅在非pano模式下
+      if (!panoActive) {
+        layerX -= camPosX
+        layerY -= camPosY
+      }
+      
+      // 摄像机旋转影响前景位置（与背景方向一致）
       if (camYaw !== 0 || camPitch !== 0) {
         const yawRad = camYaw * Math.PI / 180
         const pitchRad = camPitch * Math.PI / 180
-        // 使用FOV来计算移动量，使前景移动与pano背景同步
         const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
         const moveScale = store.project.width / (2 * fovFactor)
-        layerX -= Math.tan(yawRad) * moveScale
-        layerY -= Math.tan(pitchRad) * moveScale
+        // pano模式下前景需要反向移动（因为pano背景是球面投影）
+        // camera-only模式下前景与背景同向移动
+        if (panoActive) {
+          layerX -= Math.tan(yawRad) * moveScale
+          layerY -= Math.tan(pitchRad) * moveScale
+        } else {
+          layerX += Math.tan(yawRad) * moveScale
+          layerY += Math.tan(pitchRad) * moveScale
+        }
       }
     }
     
     // Z深度产生的缩放效果
     const depthScale = 1 / Math.max(0.1, 1 + layerZ * 0.001)
+    
+    // 摄像机Z轴产生的缩放效果（推拉）- 仅在camera-only模式下
+    let cameraZScale = 1
+    if (cameraActive && !panoActive) {
+      const camPosZ = store.interpolateProjectValue?.('cam_pos_z', store.currentTime, store.project.cam_pos_z ?? 1000) ?? (store.project.cam_pos_z ?? 1000)
+      cameraZScale = Math.max(0.1, Math.min(10, 1000 / Math.max(100, camPosZ)))
+    }
     
     // 最终位置：图层位置 + 摄像机偏移
     const translateX = store.project.width / 2 + layerX + camOffsetX
@@ -633,10 +694,10 @@ export function useCanvasRenderer(
       ctx.scale(cosY, cosX)
     }
     
-    // 使用rotationZ（如果存在）或rotation
-    const actualRotation = props.rotationZ !== undefined && props.rotationZ !== 0 ? props.rotationZ : props.rotation
+    // 使用rotationZ（如果有值）或rotation
+    const actualRotation = props.rotationZ || props.rotation || 0
     ctx.rotate((actualRotation * Math.PI) / 180)
-    const scaleApplied = props.scale * depthScale
+    const scaleApplied = props.scale * depthScale * cameraZScale
     ctx.scale(scaleApplied, scaleApplied)
     ctx.globalAlpha = props.opacity
 

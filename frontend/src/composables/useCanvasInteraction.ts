@@ -53,9 +53,16 @@ export function useCanvasInteraction(
     const toolsOff = !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
     if (!toolsOff) return false
     if (!store.project.cam_enable || store.project.pano_enable) return false
-    // 按住 Ctrl 时优先图层拖动
-    if (e && 'ctrlKey' in e && e.ctrlKey) return false
-    return true
+    // 选中Camera图层时，始终允许摄像机控制
+    if (store.cameraSelected) return true
+    // 有选中普通图层时，按住修饰键优先处理图层操作
+    if (store.currentLayer && e) {
+      if ('ctrlKey' in e && e.ctrlKey) return false
+      if ('shiftKey' in e && e.shiftKey) return false
+      if ('altKey' in e && e.altKey) return false
+    }
+    // 没有选中任何图层时，允许摄像机控制
+    return !store.currentLayer
   }
 
   function getCanvasCoords(e: MouseEvent) {
@@ -298,7 +305,50 @@ export function useCanvasInteraction(
 
   function onWheel(e: WheelEvent) {
     const delta = e.deltaY > 0 ? -0.05 : 0.05
+    const toolsOff = !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled
 
+    // 选中Camera图层时，滚轮控制摄像机参数
+    if (store.cameraSelected && store.project.cam_enable && toolsOff) {
+      const rotationStep = 2
+      const zStep = 50
+      const fovStep = 2
+      
+      if (e.shiftKey && !e.ctrlKey && !e.altKey) {
+        // Shift+滚轮: 调整Pitch (X轴旋转)
+        const currentPitch = store.project.cam_pitch || 0
+        const nextPitch = Math.max(-89, Math.min(89, currentPitch + (delta > 0 ? rotationStep : -rotationStep)))
+        store.setProject({ cam_pitch: nextPitch })
+        store.setProjectKeyframe?.('cam_pitch', store.currentTime, nextPitch)
+      } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+        // Ctrl+滚轮: 调整Yaw (Y轴旋转)
+        const currentYaw = store.project.cam_yaw || 0
+        const nextYaw = currentYaw + (delta > 0 ? rotationStep : -rotationStep)
+        store.setProject({ cam_yaw: nextYaw })
+        store.setProjectKeyframe?.('cam_yaw', store.currentTime, nextYaw)
+      } else if (e.altKey && !e.shiftKey && !e.ctrlKey) {
+        // Alt+滚轮: 调整Roll (Z轴旋转)
+        const currentRoll = store.project.cam_roll || 0
+        const nextRoll = currentRoll + (delta > 0 ? rotationStep : -rotationStep)
+        store.setProject({ cam_roll: nextRoll })
+        store.setProjectKeyframe?.('cam_roll', store.currentTime, nextRoll)
+      } else if (e.ctrlKey && e.shiftKey && !e.altKey) {
+        // Ctrl+Shift+滚轮: 调整FOV
+        const currentFov = store.project.cam_fov || 90
+        const nextFov = Math.min(170, Math.max(10, currentFov + (delta > 0 ? fovStep : -fovStep)))
+        store.setProject({ cam_fov: nextFov })
+        store.setProjectKeyframe?.('cam_fov', store.currentTime, nextFov)
+      } else {
+        // 普通滚轮: 调整Z轴位置（推拉）
+        const currentZ = store.project.cam_pos_z || 1000
+        const nextZ = Math.max(100, currentZ + (delta > 0 ? zStep : -zStep))
+        store.setProject({ cam_pos_z: nextZ })
+        store.setProjectKeyframe?.('cam_pos_z', store.currentTime, nextZ)
+      }
+      scheduleRender()
+      return
+    }
+
+    // camera-only模式下的摄像机控制
     const camWheelDolly = cameraControlAllowed(e)
     if (camWheelDolly) {
       const currentZ = store.project.cam_pos_z || 0
@@ -310,29 +360,13 @@ export function useCanvasInteraction(
       return
     }
     
-    const isCameraWheel = store.project.pano_enable &&
-      !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled &&
-      (!store.currentLayer || e.ctrlKey || e.altKey)
+    // pano模式下，没有选中图层时滚轮调整FOV
+    const isCameraWheel = store.project.pano_enable && toolsOff && !store.currentLayer
 
     if (isCameraWheel) {
       const nextFov = Math.min(170, Math.max(10, (store.project.cam_fov || 90) + (delta > 0 ? 2 : -2)))
       store.setProject({ cam_fov: nextFov })
       store.setProjectKeyframe?.('cam_fov', store.currentTime, nextFov)
-      scheduleRender()
-      return
-    }
-
-    const camera3DEnabled = !!(store.project.cam_enable)
-    const cameraReady = camera3DEnabled && !store.project.pano_enable &&
-      !store.maskMode.enabled && !store.extractMode.enabled && !store.pathMode.enabled &&
-      !store.currentLayer
-
-    if (cameraReady && !store.currentLayer) {
-      const currentZ = store.project.cam_pos_z || 0
-      const step = 5
-      const nextZ = currentZ + (delta > 0 ? step : -step)
-      store.setProject({ cam_pos_z: nextZ })
-      store.setProjectKeyframe?.('cam_pos_z', store.currentTime, nextZ)
       scheduleRender()
       return
     }
@@ -343,7 +377,12 @@ export function useCanvasInteraction(
     const props = getLayerProps(layer)
     const rotationStep = 2
     
-    if (e.shiftKey && !e.ctrlKey && !e.altKey) {
+    if (e.ctrlKey && e.shiftKey && !e.altKey) {
+      // Ctrl+Shift+滚轮: 调整Z轴位置
+      const zStep = 50
+      const newZ = (props.z || 0) + (delta > 0 ? zStep : -zStep)
+      updateLayerWithKeyframes(layer, 'z', newZ)
+    } else if (e.shiftKey && !e.ctrlKey && !e.altKey) {
       const newRotationX = props.rotationX + (delta > 0 ? rotationStep : -rotationStep)
       updateLayerWithKeyframes(layer, 'rotationX', newRotationX)
     } else if (e.ctrlKey && !e.shiftKey && !e.altKey) {
@@ -360,9 +399,70 @@ export function useCanvasInteraction(
   }
 
   function onKeyDown(e: KeyboardEvent) {
+    const step = e.shiftKey ? 10 : 1
+    
+    // 选中Camera图层时，方向键控制摄像机位置
+    if (store.cameraSelected && store.project.cam_enable) {
+      const posStep = step * 5
+      switch (e.key) {
+        case 'ArrowLeft':
+          const newPosX = (store.project.cam_pos_x || 0) - posStep
+          store.setProject({ cam_pos_x: newPosX })
+          store.setProjectKeyframe?.('cam_pos_x', store.currentTime, newPosX)
+          scheduleRender()
+          e.preventDefault()
+          break
+        case 'ArrowRight':
+          const newPosXR = (store.project.cam_pos_x || 0) + posStep
+          store.setProject({ cam_pos_x: newPosXR })
+          store.setProjectKeyframe?.('cam_pos_x', store.currentTime, newPosXR)
+          scheduleRender()
+          e.preventDefault()
+          break
+        case 'ArrowUp':
+          if (e.ctrlKey) {
+            // Ctrl+上下调整Z轴
+            const newPosZ = Math.max(100, (store.project.cam_pos_z || 1000) - posStep * 10)
+            store.setProject({ cam_pos_z: newPosZ })
+            store.setProjectKeyframe?.('cam_pos_z', store.currentTime, newPosZ)
+          } else {
+            const newPosY = (store.project.cam_pos_y || 0) - posStep
+            store.setProject({ cam_pos_y: newPosY })
+            store.setProjectKeyframe?.('cam_pos_y', store.currentTime, newPosY)
+          }
+          scheduleRender()
+          e.preventDefault()
+          break
+        case 'ArrowDown':
+          if (e.ctrlKey) {
+            const newPosZD = (store.project.cam_pos_z || 1000) + posStep * 10
+            store.setProject({ cam_pos_z: newPosZD })
+            store.setProjectKeyframe?.('cam_pos_z', store.currentTime, newPosZD)
+          } else {
+            const newPosYD = (store.project.cam_pos_y || 0) + posStep
+            store.setProject({ cam_pos_y: newPosYD })
+            store.setProjectKeyframe?.('cam_pos_y', store.currentTime, newPosYD)
+          }
+          scheduleRender()
+          e.preventDefault()
+          break
+        case 'r':
+        case 'R':
+          // 重置摄像机
+          store.setProject({
+            cam_pos_x: 0, cam_pos_y: 0, cam_pos_z: 1000,
+            cam_yaw: 0, cam_pitch: 0, cam_roll: 0,
+            cam_fov: 90
+          })
+          scheduleRender()
+          e.preventDefault()
+          break
+      }
+      return
+    }
+    
     if (!store.currentLayer) return
     
-    const step = e.shiftKey ? 10 : 1
     const layer = store.currentLayer
     const props = getLayerProps(layer)
     
@@ -378,14 +478,27 @@ export function useCanvasInteraction(
         e.preventDefault()
         break
       case 'ArrowUp':
-        updateLayerWithKeyframes(layer, 'y', props.y - step)
-        scheduleRender()
-        e.preventDefault()
+        // Ctrl+上下调整Z轴，普通上下调整Y轴
+        if (e.ctrlKey) {
+          updateLayerWithKeyframes(layer, 'z', (props.z || 0) - step * 10)
+          scheduleRender()
+          e.preventDefault()
+        } else {
+          updateLayerWithKeyframes(layer, 'y', props.y - step)
+          scheduleRender()
+          e.preventDefault()
+        }
         break
       case 'ArrowDown':
-        updateLayerWithKeyframes(layer, 'y', props.y + step)
-        scheduleRender()
-        e.preventDefault()
+        if (e.ctrlKey) {
+          updateLayerWithKeyframes(layer, 'z', (props.z || 0) + step * 10)
+          scheduleRender()
+          e.preventDefault()
+        } else {
+          updateLayerWithKeyframes(layer, 'y', props.y + step)
+          scheduleRender()
+          e.preventDefault()
+        }
         break
       case 'r':
       case 'R':

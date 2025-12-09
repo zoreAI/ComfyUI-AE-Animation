@@ -223,7 +223,7 @@
         <div class="layers-panel">
           <div class="layers-header">Layers ({{ store.layers.length }})</div>
 <div class="layers-list" @scroll="onLayersScroll">
-            <div class="layer-item camera-layer" @click="selectCamera()">
+            <div class="layer-item camera-layer" :class="{active: store.cameraSelected}" @click="selectCamera()">
               <span class="expand-icon" @click.stop="toggleCameraExpand()">
                 {{ cameraExpanded ? 'v' : '>' }}
               </span>
@@ -1161,7 +1161,8 @@ function onCameraKeyframeDragStart(e: MouseEvent, kf: { prop: string, time: numb
 }
 
 function selectCamera() {
-  // no-op for now; reserved for future UI cues
+  store.selectCameraLayer()
+  cameraExpanded.value = true
 }
 
 function clearAllKeyframes() {

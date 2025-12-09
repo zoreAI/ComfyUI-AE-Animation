@@ -356,6 +356,168 @@ class AEAnimation(io.ComfyNode):
             canvas[:, :, 3] = np.maximum(canvas[:, :, 3], (alpha[:, :, 0] * 255).astype(np.uint8))
 
     @staticmethod
+    def _render_layer_2d_with_3d_rotation(
+        img_np: np.ndarray,
+        x: float, y: float,
+        scale: float,
+        rot_x: float, rot_y: float, rot_z: float,
+        canvas: np.ndarray,
+        mask_canvas: np.ndarray,
+        opacity: float,
+        is_foreground: bool,
+        width: int,
+        height: int,
+        perspective: float = 1000.0,
+        bg_mode: str = "fit"
+    ) -> None:
+        """Render a layer with 3D rotation using perspective transform."""
+        orig_w, orig_h = img_np.shape[1], img_np.shape[0]
+
+        # Background scaling
+        base_scale = 1.0
+        if not is_foreground:
+            if bg_mode == "fit":
+                base_scale = min(width / orig_w, height / orig_h)
+            elif bg_mode == "fill":
+                base_scale = max(width / orig_w, height / orig_h)
+            elif bg_mode == "stretch":
+                base_scale = min(width / orig_w, height / orig_h)
+        
+        final_scale = base_scale * scale
+        if final_scale != 1.0 and final_scale > 0:
+            new_w, new_h = max(1, int(orig_w * final_scale)), max(1, int(orig_h * final_scale))
+            img_np = cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        current_w, current_h = img_np.shape[1], img_np.shape[0]
+        
+        # 检查是否需要 3D 旋转
+        has_3d_rotation = abs(rot_x) > 0.1 or abs(rot_y) > 0.1 or abs(rot_z) > 0.1
+        
+        if has_3d_rotation:
+            # 转换为弧度
+            rx = np.deg2rad(rot_x)
+            ry = np.deg2rad(rot_y)
+            rz = np.deg2rad(rot_z)
+            
+            # 旋转矩阵
+            cos_x, sin_x = np.cos(rx), np.sin(rx)
+            cos_y, sin_y = np.cos(ry), np.sin(ry)
+            cos_z, sin_z = np.cos(rz), np.sin(rz)
+            
+            # 原始四个角点（相对于中心，与前端GPU渲染器一致）
+            # 前端WebGPU使用Y向上的坐标系，y=hh是bottom，y=-hh是top
+            # 后端图像坐标系Y向下，所以需要在投影后翻转Y
+            hw, hh = current_w / 2, current_h / 2
+            # 顺序与前端一致：bottom-left, bottom-right, top-right, top-left
+            # 对应src_pts的顺序：[0,h], [w,h], [w,0], [0,0]
+            corners_3d = np.array([
+                [-hw, hh, 0],   # bottom-left (前端y=hh是bottom)
+                [hw, hh, 0],    # bottom-right
+                [hw, -hh, 0],   # top-right (前端y=-hh是top)
+                [-hw, -hh, 0]   # top-left
+            ], dtype=np.float64)
+            
+            # 应用 3D 旋转（顺序：Z -> Y -> X，与前端一致）
+            transformed = []
+            for p in corners_3d:
+                px, py, pz = p
+                
+                # Z 轴旋转
+                x1 = px * cos_z - py * sin_z
+                y1 = px * sin_z + py * cos_z
+                z1 = pz
+                
+                # Y 轴旋转
+                x2 = x1 * cos_y + z1 * sin_y
+                z2 = -x1 * sin_y + z1 * cos_y
+                y2 = y1
+                
+                # X 轴旋转
+                y3 = y2 * cos_x - z2 * sin_x
+                z3 = y2 * sin_x + z2 * cos_x
+                x3 = x2
+                
+                # 透视投影
+                proj_scale = perspective / (perspective + z3)
+                proj_x = x3 * proj_scale
+                # 不翻转Y轴，因为src_pts已经按照正确的顺序排列
+                proj_y = y3 * proj_scale
+                
+                transformed.append([proj_x, proj_y])
+            
+            # 源角点（图像坐标系，Y向下）
+            # 顺序与corners_3d一致：bottom-left, bottom-right, top-right, top-left
+            src_pts = np.array([
+                [0, current_h],      # bottom-left
+                [current_w, current_h],  # bottom-right
+                [current_w, 0],      # top-right
+                [0, 0]               # top-left
+            ], dtype=np.float32)
+            
+            # 目标角点（加上画布中心偏移）
+            center_x = width / 2 + x
+            center_y = height / 2 + y
+            dst_pts = np.array([
+                [center_x + transformed[0][0], center_y + transformed[0][1]],
+                [center_x + transformed[1][0], center_y + transformed[1][1]],
+                [center_x + transformed[2][0], center_y + transformed[2][1]],
+                [center_x + transformed[3][0], center_y + transformed[3][1]]
+            ], dtype=np.float32)
+            
+            # 检查目标点是否在合理范围内
+            if np.any(dst_pts < -width * 2) or np.any(dst_pts > width * 3):
+                return
+            
+            # 透视变换
+            try:
+                M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+                warped = cv2.warpPerspective(img_np, M, (width, height), 
+                                            borderMode=cv2.BORDER_CONSTANT, 
+                                            borderValue=(0, 0, 0, 0))
+            except cv2.error:
+                return
+            
+            # 合成到画布
+            if is_foreground and warped.shape[2] == 4:
+                mask_layer = (warped[:, :, 3].astype(np.float32) * opacity).astype(np.uint8)
+                mask_canvas[:] = np.maximum(mask_canvas, mask_layer)
+            
+            if warped.shape[2] == 4:
+                alpha = (warped[:, :, 3:4].astype(np.float32) / 255.0) * opacity
+                for c in range(3):
+                    canvas[:, :, c] = (canvas[:, :, c] * (1 - alpha[:, :, 0]) + 
+                                      warped[:, :, c] * alpha[:, :, 0]).astype(np.uint8)
+                canvas[:, :, 3] = np.maximum(canvas[:, :, 3], (alpha[:, :, 0] * 255).astype(np.uint8))
+            return
+        
+        # 无 3D 旋转时使用简单的粘贴
+        paste_x = int(width // 2 + x - current_w // 2)
+        paste_y = int(height // 2 + y - current_h // 2)
+
+        # Update mask for foreground
+        if is_foreground and img_np.shape[2] == 4:
+            mask_layer = (img_np[:, :, 3].astype(np.float32) * opacity).astype(np.uint8)
+            y1, x1 = max(0, paste_y), max(0, paste_x)
+            y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
+            if y2 > y1 and x2 > x1:
+                sy, sx = max(0, -paste_y), max(0, -paste_x)
+                src = mask_layer[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
+                mask_canvas[y1:y2, x1:x2] = np.maximum(mask_canvas[y1:y2, x1:x2], src)
+
+        # Composite
+        y1, x1 = max(0, paste_y), max(0, paste_x)
+        y2, x2 = min(paste_y + current_h, height), min(paste_x + current_w, width)
+        if y2 > y1 and x2 > x1:
+            sy, sx = max(0, -paste_y), max(0, -paste_x)
+            src = img_np[sy:sy + (y2 - y1), sx:sx + (x2 - x1)]
+            dst = canvas[y1:y2, x1:x2]
+            if src.shape[2] == 4:
+                alpha = (src[:, :, 3:4].astype(np.float32) / 255.0) * opacity
+                for c in range(3):
+                    dst[:, :, c] = (dst[:, :, c] * (1 - alpha[:, :, 0]) + src[:, :, c] * alpha[:, :, 0]).astype(np.uint8)
+                dst[:, :, 3] = np.maximum(dst[:, :, 3], (alpha[:, :, 0] * 255).astype(np.uint8))
+
+    @staticmethod
     def _render_layer_2d(
         img_np: np.ndarray,
         x: float, y: float,
@@ -615,10 +777,20 @@ class AEAnimation(io.ComfyNode):
                         fg_x -= np.tan(yaw_rad) * move_scale
                         fg_y -= np.tan(pitch_rad) * move_scale
                     
-                    cls._render_layer_2d(
-                        img_np, fg_x, fg_y, data["scale_2d"], data["rotation_2d"],
-                        canvas, mask_canvas, opacity, is_foreground, width, height, "fit"
-                    )
+                    # Check if has 3D rotation
+                    has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
+                    if has_3d_rotation:
+                        cls._render_layer_2d_with_3d_rotation(
+                            img_np, fg_x, fg_y, data["scale_2d"],
+                            data["rot_x"], data["rot_y"], data["rot_z"],
+                            canvas, mask_canvas, opacity, is_foreground, width, height,
+                            perspective=1000.0, bg_mode="fit"
+                        )
+                    else:
+                        cls._render_layer_2d(
+                            img_np, fg_x, fg_y, data["scale_2d"], data["rotation_2d"],
+                            canvas, mask_canvas, opacity, is_foreground, width, height, "fit"
+                        )
                 elif is_3d or camera_active:
                     # 3D rendering with perspective
                     model_matrix = Transform3D.build_model_matrix(
@@ -630,11 +802,20 @@ class AEAnimation(io.ComfyNode):
                     mvp = vp_matrix @ model_matrix
                     cls._render_layer_3d(img_np, mvp, canvas, mask_canvas, opacity, is_foreground, width, height)
                 else:
-                    # 2D rendering (legacy)
-                    cls._render_layer_2d(
-                        img_np, data["x"], data["y"], data["scale_2d"], data["rotation_2d"],
-                        canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"]
-                    )
+                    # 2D rendering - check if has 3D rotation
+                    has_3d_rotation = abs(data["rot_x"]) > 0.1 or abs(data["rot_y"]) > 0.1 or abs(data["rot_z"]) > 0.1
+                    if has_3d_rotation:
+                        cls._render_layer_2d_with_3d_rotation(
+                            img_np, data["x"], data["y"], data["scale_2d"],
+                            data["rot_x"], data["rot_y"], data["rot_z"],
+                            canvas, mask_canvas, opacity, is_foreground, width, height,
+                            perspective=1000.0, bg_mode=layer["bg_mode"]
+                        )
+                    else:
+                        cls._render_layer_2d(
+                            img_np, data["x"], data["y"], data["scale_2d"], data["rotation_2d"],
+                            canvas, mask_canvas, opacity, is_foreground, width, height, layer["bg_mode"]
+                        )
 
             # Post-processing
             if mask_expansion != 0:

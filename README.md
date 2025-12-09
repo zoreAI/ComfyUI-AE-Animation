@@ -207,7 +207,51 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 
 ### 🎨 详细操作指南
 
-#### 1. 图层管理
+#### 1. 画布交互操作
+
+**基础图层操作**
+| 操作 | 效果 |
+|------|------|
+| 鼠标左键拖拽 | 移动图层位置（X/Y） |
+| 方向键 ←→↑↓ | 微调图层位置（步进 1px） |
+| Shift + 方向键 | 快速移动（步进 10px） |
+| Ctrl + ↑↓ | 调整图层 Z 轴深度（步进 10） |
+| R 键 | 重置图层变换（位置、缩放、旋转、透明度） |
+
+**滚轮变换操作**（需选中图层）
+| 操作 | 效果 |
+|------|------|
+| 滚轮 | 缩放图层（Scale） |
+| Shift + 滚轮 | X 轴旋转（RotationX，3D 翻转效果） |
+| Ctrl + 滚轮 | Y 轴旋转（RotationY，3D 翻转效果） |
+| Alt + 滚轮 | Z 轴旋转（RotationZ，平面旋转） |
+| Ctrl + Shift + 滚轮 | 调整 Z 轴位置（深度） |
+
+**3D 摄像机模式**（启用 Camera，未启用 Pano）
+| 操作 | 效果 |
+|------|------|
+| 左键拖拽（无选中图层） | 摄像机轨道旋转（Yaw/Pitch） |
+| Shift + 左键拖拽 | 摄像机滚转（Roll） |
+| 中键拖拽 | 摄像机平移（Pos X/Y） |
+| 右键拖拽 | 摄像机推拉（Pos Z） |
+| 滚轮（无选中图层） | 摄像机推拉（Pos Z） |
+
+**全景模式**（启用 Pano）
+| 操作 | 效果 |
+|------|------|
+| 中键/右键拖拽 | 全景旋转（Yaw/Pitch） |
+| 左键拖拽（无选中图层或 Alt） | 平移偏移（Offset X/Y） |
+| 滚轮（无选中图层） | 调整视野角度（FOV） |
+
+**工具模式操作**（Mask/Extract）
+| 操作 | 效果 |
+|------|------|
+| 左键拖拽 | 绘制区域 |
+| Shift + 左键 | 擦除区域 |
+| 右键拖拽 | 擦除区域 |
+| Alt + 左键 | 擦除区域 |
+
+#### 2. 图层管理
 
 **添加图层**
 - 点击顶部 `+FG` 或 `+BG` 按钮
@@ -223,6 +267,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 - 在左侧属性面板的 Transform 区域直接输入数值
 - 或在画布上直接拖拽图层（调整 X、Y）
 - 使用滚轮缩放图层（调整 Scale）
+- 使用修饰键 + 滚轮调整旋转（见上方交互表格）
 
 **图层排序**
 - 在时间轴图层列表中使用 `▲` / `▼` 按钮调整图层顺序
@@ -232,7 +277,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 - 在图层列表中点击删除按钮（如果可用）
 - 或通过节点输入端断开连接
 
-#### 2. 关键帧动画
+#### 3. 关键帧动画
 
 **添加关键帧**
 1. 在时间轴上拖拽播放头到目标时间点
@@ -257,7 +302,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 - 使用空格键快速播放/暂停
 - 拖拽时间滑块手动调整时间
 
-#### 3. Mask 遮罩功能
+#### 4. Mask 遮罩功能
 
 **创建 Mask**
 1. 选择前景图层
@@ -276,7 +321,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 **清除 Mask**
 - 点击 `Clear` 按钮清除当前图层的 Mask
 
-#### 4. 路径动画
+#### 5. 路径动画
 
 **创建路径**
 1. 选择要动画的图层
@@ -293,7 +338,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 - 拖动路径上的控制点调整形状
 - 路径会自动更新关键帧
 
-#### 5. Extract 背景提取
+#### 6. Extract 背景提取
 
 **提取背景区域**
 1. 确保已加载背景图层
@@ -315,7 +360,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 - 提取背景的某个元素单独动画
 - 创建景深效果（前景清晰，背景模糊）
 
-#### 6. 三维摄像机（新功能）
+#### 7. 三维摄像机（新功能）
 
 **启用摄像机**
 1. 在项目设置面板中找到 "🎥 3D 摄像机" 部分
@@ -356,7 +401,7 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 - 全景模式需要启用摄像机
 - 详见 [3D预览限制说明](docs/3D_PREVIEW_LIMITATIONS.md)
 
-#### 7. 画布操作
+#### 8. 画布操作
 
 **缩放画布**
 - 使用右上角的 `Zoom` 滑块（25%~200%）
@@ -443,13 +488,22 @@ git clone https://github.com/wallen0322/ComfyUI-AE-Animation.git
 
 ---
 
-## ⌨️ 快捷键
+## ⌨️ 快捷键速查
 
-- **空格键**：播放/暂停动画
-- **鼠标左键拖拽**：移动图层位置
-- **鼠标滚轮**：缩放图层
-- **Shift + 鼠标左键**：擦除 Mask/Extract 区域
-- **鼠标右键**：擦除 Mask/Extract 区域
+| 快捷键 | 功能 |
+|--------|------|
+| 空格键 | 播放/暂停动画 |
+| 方向键 | 移动图层位置 |
+| Shift + 方向键 | 快速移动（10px） |
+| Ctrl + ↑↓ | 调整 Z 轴深度 |
+| 滚轮 | 缩放图层 |
+| Shift + 滚轮 | X 轴旋转 |
+| Ctrl + 滚轮 | Y 轴旋转 |
+| Alt + 滚轮 | Z 轴旋转 |
+| R 键 | 重置图层变换 |
+| Delete/Backspace | 删除图层 |
+
+> 📖 完整交互操作说明请参考 [详细操作指南 - 画布交互操作](#1-画布交互操作)
 
 ---
 

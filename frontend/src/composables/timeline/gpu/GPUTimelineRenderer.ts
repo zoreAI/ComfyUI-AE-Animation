@@ -1004,6 +1004,13 @@ export class GPUTimelineRenderer {
     // Calculate depth multiplier for parallax (与Canvas 2D一致)
     const depthMul = 1 / Math.max(0.1, 1 + props.z * 0.001)
 
+    // Calculate camera Z scale (摄像机推拉产生的缩放效果)
+    // cam_pos_z 默认1000，越小越近（放大），越大越远（缩小）
+    const camPosZ = camera.position.z
+    const cameraZScale = cameraActive && !panoActive 
+      ? Math.max(0.1, Math.min(10, 1000 / Math.max(100, camPosZ)))
+      : 1
+
     // Calculate base scale for background layers
     let baseScale = 1
     if (layer.type === 'background') {
@@ -1011,7 +1018,7 @@ export class GPUTimelineRenderer {
     }
 
     // Calculate final scale (与Canvas 2D一致)
-    const finalScale = props.scale * baseScale * depthMul
+    const finalScale = props.scale * baseScale * depthMul * cameraZScale
 
     // Calculate layer position in screen space
     const imgW = layer.img.width
@@ -1019,47 +1026,126 @@ export class GPUTimelineRenderer {
     const centerX = this.width / 2
     const centerY = this.height / 2
     
-    // 前景图层位置计算 - 完全对齐Canvas 2D的drawForegroundLayer逻辑
     let layerX = props.x
     let layerY = props.y
     
-    // 前景图层跟随摄像机旋转（pano模式和普通摄像机模式都需要）
-    // 这与Canvas 2D的逻辑完全一致
+    // 只开camera模式（非pano）下，背景也需要响应摄像机
+    if (layer.type === 'background' && cameraActive && !panoActive) {
+      const camYaw = camera.rotation.yaw
+      const camPitch = camera.rotation.pitch
+      const camFov = Math.max(10, Math.min(170, camera.fov || 90))
+      const camPosX = camera.position.x
+      const camPosY = camera.position.y
+      
+      // 摄像机位置影响背景偏移（反向）
+      layerX -= camPosX
+      layerY -= camPosY
+      
+      // 摄像机旋转影响背景位置
+      if (camYaw !== 0 || camPitch !== 0) {
+        const yawRad = (camYaw * Math.PI) / 180
+        const pitchRad = (camPitch * Math.PI) / 180
+        const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
+        const moveScale = this.width / (2 * fovFactor)
+        layerX += Math.tan(yawRad) * moveScale
+        layerY += Math.tan(pitchRad) * moveScale
+      }
+    }
+    
+    // 前景图层跟随摄像机（pano模式和普通摄像机模式都需要）
     if (layer.type !== 'background' && (cameraActive || panoActive)) {
       const camYaw = camera.rotation.yaw
       const camPitch = camera.rotation.pitch
       const camFov = Math.max(10, Math.min(170, camera.fov || 90))
+      const camPosX = camera.position.x
+      const camPosY = camera.position.y
       
+      // 摄像机位置影响前景偏移（反向，与背景一致）
+      if (!panoActive) {
+        layerX -= camPosX
+        layerY -= camPosY
+      }
+      
+      // 摄像机旋转影响前景位置（与背景方向一致）
       if (camYaw !== 0 || camPitch !== 0) {
         const yawRad = (camYaw * Math.PI) / 180
         const pitchRad = (camPitch * Math.PI) / 180
-        // 使用FOV来计算移动量，使前景移动与pano背景同步
         const fovFactor = Math.tan((camFov * Math.PI / 180) / 2)
         const moveScale = this.width / (2 * fovFactor)
-        layerX -= Math.tan(yawRad) * moveScale
-        layerY -= Math.tan(pitchRad) * moveScale
+        // pano模式下前景需要反向移动（因为pano背景是球面投影）
+        // camera-only模式下前景与背景同向移动
+        if (panoActive) {
+          layerX -= Math.tan(yawRad) * moveScale
+          layerY -= Math.tan(pitchRad) * moveScale
+        } else {
+          layerX += Math.tan(yawRad) * moveScale
+          layerY += Math.tan(pitchRad) * moveScale
+        }
       }
     }
     
     // 最终位置：画布中心 + 图层位置 + 摄像机偏移 (与Canvas 2D一致)
     const finalX = centerX + layerX + camOffsetX
     const finalY = centerY + layerY + camOffsetY
+    
     const layerW = imgW * finalScale
     const layerH = imgH * finalScale
     
-    // Create vertices for this specific layer (in NDC space)
-    // Note: WebGPU Y-axis is flipped compared to Canvas 2D
-    const left = ((finalX - layerW / 2) / this.width) * 2 - 1
-    const right = ((finalX + layerW / 2) / this.width) * 2 - 1
-    const top = 1 - ((finalY - layerH / 2) / this.height) * 2
-    const bottom = 1 - ((finalY + layerH / 2) / this.height) * 2
+    // 获取旋转角度
+    const rotX = (props.rotationX || 0) * Math.PI / 180
+    const rotY = (props.rotationY || 0) * Math.PI / 180
+    const rotZ = ((props.rotationZ || props.rotation || 0)) * Math.PI / 180
     
-    // Texture coordinates - standard mapping (no flip needed, texture is loaded correctly)
+    // 透视距离（用于 3D 效果）
+    const perspective = props.perspective || 1000
+    
+    // 计算四个角点（相对于中心，在 3D 空间中）
+    const hw = layerW / 2
+    const hh = layerH / 2
+    
+    // 原始角点 (x, y, z)
+    const originalCorners = [
+      { x: -hw, y: hh, z: 0 },   // bottom-left
+      { x: hw, y: hh, z: 0 },    // bottom-right
+      { x: hw, y: -hh, z: 0 },   // top-right
+      { x: -hw, y: -hh, z: 0 }   // top-left
+    ]
+    
+    // 应用 3D 旋转（顺序：Z -> Y -> X，与 AE 一致）
+    const cosX = Math.cos(rotX), sinX = Math.sin(rotX)
+    const cosY = Math.cos(rotY), sinY = Math.sin(rotY)
+    const cosZ = Math.cos(rotZ), sinZ = Math.sin(rotZ)
+    
+    const corners = originalCorners.map(p => {
+      // Z 轴旋转
+      let x = p.x * cosZ - p.y * sinZ
+      let y = p.x * sinZ + p.y * cosZ
+      let z = p.z
+      
+      // Y 轴旋转
+      const x2 = x * cosY + z * sinY
+      z = -x * sinY + z * cosY
+      x = x2
+      
+      // X 轴旋转
+      const y2 = y * cosX - z * sinX
+      z = y * sinX + z * cosX
+      y = y2
+      
+      // 透视投影
+      const scale = perspective / (perspective + z)
+      return {
+        x: x * scale,
+        y: y * scale
+      }
+    })
+    
+    // 转换到 NDC 空间
     const layerVertices = new Float32Array([
-      left, bottom, 0, 1,   // bottom-left
-      right, bottom, 1, 1,  // bottom-right
-      right, top, 1, 0,     // top-right
-      left, top, 0, 0       // top-left
+      ((finalX + corners[0].x) / this.width) * 2 - 1, 1 - ((finalY + corners[0].y) / this.height) * 2, 0, 1,
+      ((finalX + corners[1].x) / this.width) * 2 - 1, 1 - ((finalY + corners[1].y) / this.height) * 2, 1, 1,
+      ((finalX + corners[2].x) / this.width) * 2 - 1, 1 - ((finalY + corners[2].y) / this.height) * 2, 1, 0,
+      ((finalX + corners[3].x) / this.width) * 2 - 1, 1 - ((finalY + corners[3].y) / this.height) * 2, 0, 0
     ])
     
     // Create temporary vertex buffer for this layer

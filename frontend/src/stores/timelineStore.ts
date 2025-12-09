@@ -119,6 +119,7 @@ export const useTimelineStore = defineStore('timeline', () => {
   // Layers
   const layers = ref<Layer[]>([])
   const currentLayerIndex = ref<number>(-1)
+  const cameraSelected = ref<boolean>(false)  // 是否选中Camera图层
 
   // Playback
   const currentTime = ref<number>(0)
@@ -253,7 +254,18 @@ export const useTimelineStore = defineStore('timeline', () => {
   function selectLayer(index: number) {
     if (index >= 0 && index < layers.value.length) {
       currentLayerIndex.value = index
+      cameraSelected.value = false  // 选中图层时取消Camera选中
     }
+  }
+
+  function selectCameraLayer() {
+    cameraSelected.value = true
+    currentLayerIndex.value = -1  // 取消图层选中
+  }
+
+  function deselectAll() {
+    cameraSelected.value = false
+    currentLayerIndex.value = -1
   }
 
   function updateLayer(index: number, updates: Partial<Layer>) {
@@ -495,6 +507,7 @@ export const useTimelineStore = defineStore('timeline', () => {
     project,
     layers,
     currentLayerIndex,
+    cameraSelected,
     currentTime,
     currentFrame,
     isPlaying,
@@ -514,6 +527,8 @@ export const useTimelineStore = defineStore('timeline', () => {
     removeLayer,
     clearLayers,
     selectLayer,
+    selectCameraLayer,
+    deselectAll,
     updateLayer,
     setCurrentTime,
     setCurrentFrame,
